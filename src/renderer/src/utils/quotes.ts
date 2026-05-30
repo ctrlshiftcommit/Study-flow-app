@@ -1,0 +1,22 @@
+export const quotes = [
+  'The secret of getting ahead is getting started.',
+  'Small steps every day become large results.',
+  'Focus is the art of choosing what not to do.',
+  'A little progress is still progress.',
+  'Discipline is remembering what you want.',
+  'Deep work makes quiet hours powerful.',
+  'The future is built in ordinary sessions.',
+  'Consistency beats intensity when intensity disappears.',
+  'One clear hour can change the shape of a week.',
+  'Do the next right problem.',
+  'Learning compounds when you keep showing up.',
+  'A focused mind is a generous tool.',
+  'Make the first minute easy.',
+  'Study the thing in front of you.',
+  'Done carefully is better than imagined perfectly.',
+  'Momentum begins with a single checked box.',
+  'Your attention is valuable. Spend it deliberately.',
+  'Clarity loves a timer.',
+  'The page opens when you sit with it.',
+  'Start before you feel ready.'
+];
