@@ -34,8 +34,8 @@ StudyFlow is local-first by design:
 Clone the private repository and install dependencies:
 
 ```powershell
-git clone <repo-url>
-cd <repo-folder>
+git clone https://github.com/ctrlshiftcommit/Study-flow-app.git
+cd Study-flow-app
 npm install
 ```
 

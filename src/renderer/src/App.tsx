@@ -59,6 +59,8 @@ import { quotes } from './utils/quotes';
 
 type Page = 'dashboard' | 'timer' | 'subjects' | 'analytics' | 'flashcards' | 'notes' | 'settings';
 type TimerPhase = 'focus' | 'shortBreak' | 'longBreak';
+type StatsPeriod = 'week' | 'month' | 'year' | 'lifetime';
+type AnalyticsTab = 'overview' | 'subjects' | 'time' | 'sessions';
 
 const nav: { page: Page; label: string; icon: React.ElementType }[] = [
   { page: 'dashboard', label: 'Dashboard', icon: Home },
@@ -92,6 +94,18 @@ function now() {
 const defaultAccent = '#5b6af0';
 const appLogoUrl = new URL('../../../assets/icons/tray.png', import.meta.url).href;
 const feedbackEmail = 'imakecoolappsforfun@gmail.com';
+const statsPeriods: { value: StatsPeriod; label: string }[] = [
+  { value: 'week', label: 'Week' },
+  { value: 'month', label: 'Month' },
+  { value: 'year', label: 'Year' },
+  { value: 'lifetime', label: 'Lifetime' }
+];
+const analyticsTabs: { value: AnalyticsTab; label: string }[] = [
+  { value: 'overview', label: 'Overview' },
+  { value: 'subjects', label: 'Subjects' },
+  { value: 'time', label: 'Time Patterns' },
+  { value: 'sessions', label: 'Sessions' }
+];
 
 export default function App() {
   const store = useStudyStore();
@@ -816,67 +830,525 @@ function SubjectsPage() {
 function AnalyticsPage() {
   const { sessions, subjects, goals } = useStudyStore();
   const [subjectFilter, setSubjectFilter] = useState('');
+  const [period, setPeriod] = useState<StatsPeriod>('month');
+  const [tab, setTab] = useState<AnalyticsTab>('overview');
   const [showReport, setShowReport] = useState(false);
-  const filtered = sessions.filter((s) => !subjectFilter || s.subject_id === Number(subjectFilter));
-  const streak = useMemo(() => calculateDailyStreak(sessions), [sessions]);
-  const daily = chartDays(sessions, 7);
-  const weeks = chartWeeks(sessions, 4);
-  const pie = subjects.map((subject) => ({
-    name: subject.name,
-    value: Math.round(sessions.filter((s) => s.subject_id === subject.id).reduce((sum, s) => sum + (s.duration_seconds || 0), 0) / 60),
-    color: subject.color
-  }));
-  const mood = sessions.slice(0, 30).reverse().map((s) => ({
+  const stats = useMemo(() => buildStudyStats(sessions, subjects, period), [sessions, subjects, period]);
+  const filtered = stats.sessions.filter((s) => !subjectFilter || s.subject_id === Number(subjectFilter));
+  const mood = stats.sessions.slice(0, 30).reverse().map((s) => ({
     day: new Date(s.started_at).toLocaleDateString(undefined, { month: 'short', day: 'numeric' }),
     mood: s.mood_after || 0,
     energy: s.energy_after || 0
   }));
+  const hasStudyData = stats.sessions.length > 0;
 
   return (
     <section className="page space-y-5">
-      <div className="flex justify-between gap-3 items-center">
-        <h1 className="text-3xl font-black">Analytics</h1>
-        <button className="button primary" onClick={() => setShowReport(true)}>View Report</button>
-      </div>
-      <div className="grid-auto">
-        <Metric icon={Flame} label="Current streak" value={`${streak.current} days`} />
-        <Metric icon={Trophy} label="Personal best" value={`${streak.best} days`} />
-        <Metric icon={Clock3} label="Total time" value={formatDuration(sessions.reduce((sum, s) => sum + (s.duration_seconds || 0), 0))} />
-      </div>
-      <div className="panel">
-        <h2 className="font-bold mb-3">365-Day Heatmap</h2>
-        <FixedHeatmap sessions={sessions} />
-      </div>
-      <div className="grid grid-cols-1 xl:grid-cols-2 gap-4">
-        <ChartPanel title="Study hours per day">
-          <BarChart data={daily}><CartesianGrid stroke="var(--border)" strokeDasharray="3 3" /><XAxis dataKey="day" stroke="var(--text-2)" /><YAxis stroke="var(--text-2)" /><Tooltip contentStyle={tooltipStyle} /><Bar dataKey="hours" fill="var(--accent)" /><Line dataKey="energy" stroke="var(--warning)" /></BarChart>
-        </ChartPanel>
-        <ChartPanel title="Four-week trend">
-          <LineChart data={weeks}><CartesianGrid stroke="var(--border)" strokeDasharray="3 3" /><XAxis dataKey="week" stroke="var(--text-2)" /><YAxis stroke="var(--text-2)" /><Tooltip contentStyle={tooltipStyle} /><Line dataKey="hours" stroke="var(--accent)" /></LineChart>
-        </ChartPanel>
-        <ChartPanel title="Subject distribution">
-          <PieChart><Pie data={pie} dataKey="value" nameKey="name" outerRadius={100}>{pie.map((p) => <Cell key={p.name} fill={p.color} />)}</Pie><Tooltip contentStyle={tooltipStyle} /><Legend /></PieChart>
-        </ChartPanel>
-        <ChartPanel title="Mood and energy">
-          <LineChart data={mood}><CartesianGrid stroke="var(--border)" strokeDasharray="3 3" /><XAxis dataKey="day" stroke="var(--text-2)" /><YAxis domain={[0, 5]} stroke="var(--text-2)" /><Tooltip contentStyle={tooltipStyle} /><Line dataKey="mood" stroke="var(--success)" /><Line dataKey="energy" stroke="var(--warning)" /></LineChart>
-        </ChartPanel>
-      </div>
-      <div className="panel">
-        <div className="flex gap-2 mb-3">
-          <select className="select max-w-xs" value={subjectFilter} onChange={(e) => setSubjectFilter(e.target.value)}>
-            <option value="">All subjects</option>
-            {subjects.map((s) => <option key={s.id} value={s.id}>{s.name}</option>)}
-          </select>
+      <div className="flex flex-wrap justify-between gap-3 items-center">
+        <div>
+          <h1 className="text-3xl font-black">Analytics</h1>
+          <p className="text-muted mt-1">{stats.periodLabel} - {stats.sessions.length} completed sessions</p>
         </div>
-        <FixedSessionList sessions={filtered} />
+        <div className="flex gap-2 flex-wrap">
+          <select className="select" value={period} onChange={(e) => setPeriod(e.target.value as StatsPeriod)}>
+            {statsPeriods.map((item) => <option key={item.value} value={item.value}>{item.label}</option>)}
+          </select>
+          <button className="button primary" onClick={() => setShowReport(true)}>View Report</button>
+        </div>
       </div>
-      <div className="panel">
-        <h2 className="font-bold mb-3">Goal Progress</h2>
-        <FixedGoalProgress goals={goals} />
+
+      <div className="analytics-toolbar">
+        <div className="segmented analytics-tabs">
+          {analyticsTabs.map((item) => (
+            <button key={item.value} className={clsx(tab === item.value && 'active')} onClick={() => setTab(item.value)}>
+              {item.label}
+            </button>
+          ))}
+        </div>
       </div>
+
+      {tab === 'overview' && (
+        <>
+          <div className="grid-auto">
+            <Metric icon={Clock3} label="Total study time" value={formatDuration(stats.totalSeconds)} />
+            <Metric icon={ListChecks} label="Sessions completed" value={String(stats.sessionCount)} />
+            <Metric icon={BarChart3} label="Average session" value={formatDuration(stats.averageSessionSeconds)} />
+            <Metric icon={Trophy} label="Longest session" value={formatDuration(stats.longestSessionSeconds)} />
+            <Metric icon={Flame} label="Current streak" value={`${stats.streak.current} days`} />
+            <Metric icon={Trophy} label="Best streak" value={`${stats.streak.best} days`} />
+            <Metric icon={Clock3} label="Days studied" value={String(stats.daysStudied)} />
+            <Metric icon={BarChart3} label="Avg per active day" value={formatDuration(stats.averageActiveDaySeconds)} />
+          </div>
+          {!hasStudyData && <EmptyState icon={BarChart3} title="No statistics yet" message="Complete a study session to unlock trends, rankings, and time patterns." />}
+          {hasStudyData && (
+            <>
+              <div className="insight-grid">
+                <InsightCard label="Most studied subject" value={stats.topSubject?.name || 'None'} detail={stats.topSubject ? formatDuration(stats.topSubject.seconds) : 'No subject data'} />
+                <InsightCard label="Most active time" value={stats.topHour.label} detail={formatDuration(stats.topHour.seconds)} />
+                <InsightCard label="Most active weekday" value={stats.topWeekday.label} detail={formatDuration(stats.topWeekday.seconds)} />
+                <InsightCard label="Best study day" value={stats.bestDay.label} detail={formatDuration(stats.bestDay.seconds)} />
+                <InsightCard label="Best week" value={stats.bestWeek.label} detail={formatDuration(stats.bestWeek.seconds)} />
+                <InsightCard label="Best month" value={stats.bestMonth.label} detail={formatDuration(stats.bestMonth.seconds)} />
+              </div>
+              <ChartPanel title={`${statsPeriods.find((item) => item.value === period)?.label || 'Period'} trend`}>
+                <BarChart data={stats.trend}>
+                  <CartesianGrid stroke="var(--border)" strokeDasharray="3 3" />
+                  <XAxis dataKey="label" stroke="var(--text-2)" interval="preserveStartEnd" />
+                  <YAxis stroke="var(--text-2)" />
+                  <Tooltip contentStyle={tooltipStyle} />
+                  <Bar dataKey="hours" fill="var(--accent)" />
+                </BarChart>
+              </ChartPanel>
+            </>
+          )}
+        </>
+      )}
+
+      {tab === 'subjects' && (
+        <>
+          {!hasStudyData && <EmptyState icon={BookOpen} title="No subject statistics yet" message="Log sessions with subjects to build your leaderboard." />}
+          {hasStudyData && (
+            <>
+              <div className="grid grid-cols-1 xl:grid-cols-2 gap-4">
+                <ChartPanel title="Study time by subject">
+                  <BarChart data={stats.subjectChart}>
+                    <CartesianGrid stroke="var(--border)" strokeDasharray="3 3" />
+                    <XAxis dataKey="label" stroke="var(--text-2)" interval={0} />
+                    <YAxis stroke="var(--text-2)" />
+                    <Tooltip contentStyle={tooltipStyle} />
+                    <Bar dataKey="hours">
+                      {stats.subjectChart.map((row) => <Cell key={row.label} fill={row.color} />)}
+                    </Bar>
+                  </BarChart>
+                </ChartPanel>
+                <ChartPanel title="Subject distribution">
+                  <PieChart>
+                    <Pie data={stats.subjectChart} dataKey="minutes" nameKey="label" outerRadius={100}>
+                      {stats.subjectChart.map((row) => <Cell key={row.label} fill={row.color} />)}
+                    </Pie>
+                    <Tooltip contentStyle={tooltipStyle} />
+                    <Legend />
+                  </PieChart>
+                </ChartPanel>
+              </div>
+              <div className="panel">
+                <h2 className="font-bold mb-3">Subject Leaderboard</h2>
+                <SubjectLeaderboard rows={stats.subjectRows} />
+              </div>
+            </>
+          )}
+        </>
+      )}
+
+      {tab === 'time' && (
+        <>
+          {!hasStudyData && <EmptyState icon={Clock3} title="No time patterns yet" message="Study sessions will reveal your strongest hours and weekdays." />}
+          {hasStudyData && (
+            <>
+              <div className="grid grid-cols-1 xl:grid-cols-2 gap-4">
+                <ChartPanel title="Study time by hour">
+                  <BarChart data={stats.hourRows}>
+                    <CartesianGrid stroke="var(--border)" strokeDasharray="3 3" />
+                    <XAxis dataKey="shortLabel" stroke="var(--text-2)" interval={2} />
+                    <YAxis stroke="var(--text-2)" />
+                    <Tooltip contentStyle={tooltipStyle} />
+                    <Bar dataKey="hours" fill="var(--accent)" />
+                  </BarChart>
+                </ChartPanel>
+                <ChartPanel title="Study time by weekday">
+                  <BarChart data={stats.weekdayRows}>
+                    <CartesianGrid stroke="var(--border)" strokeDasharray="3 3" />
+                    <XAxis dataKey="label" stroke="var(--text-2)" />
+                    <YAxis stroke="var(--text-2)" />
+                    <Tooltip contentStyle={tooltipStyle} />
+                    <Bar dataKey="hours" fill="var(--success)" />
+                  </BarChart>
+                </ChartPanel>
+                <ChartPanel title="Session type breakdown">
+                  <PieChart>
+                    <Pie data={stats.sessionTypeRows} dataKey="minutes" nameKey="label" outerRadius={100}>
+                      {stats.sessionTypeRows.map((row, index) => <Cell key={row.label} fill={['var(--accent)', 'var(--warning)', 'var(--success)'][index]} />)}
+                    </Pie>
+                    <Tooltip contentStyle={tooltipStyle} />
+                    <Legend />
+                  </PieChart>
+                </ChartPanel>
+                <div className="panel space-y-3">
+                  <h2 className="font-bold">Records</h2>
+                  <RecordRow label="Most active hour" value={stats.topHour.label} detail={formatDuration(stats.topHour.seconds)} />
+                  <RecordRow label="Most active weekday" value={stats.topWeekday.label} detail={formatDuration(stats.topWeekday.seconds)} />
+                  <RecordRow label="Best study day" value={stats.bestDay.label} detail={formatDuration(stats.bestDay.seconds)} />
+                  <RecordRow label="Best week" value={stats.bestWeek.label} detail={formatDuration(stats.bestWeek.seconds)} />
+                  <RecordRow label="Best month" value={stats.bestMonth.label} detail={formatDuration(stats.bestMonth.seconds)} />
+                </div>
+              </div>
+            </>
+          )}
+        </>
+      )}
+
+      {tab === 'sessions' && (
+        <>
+          <div className="panel">
+            <h2 className="font-bold mb-3">365-Day Heatmap</h2>
+            <FixedHeatmap sessions={sessions} />
+          </div>
+          <div className="grid grid-cols-1 xl:grid-cols-2 gap-4">
+            <ChartPanel title="Mood and energy">
+              <LineChart data={mood}>
+                <CartesianGrid stroke="var(--border)" strokeDasharray="3 3" />
+                <XAxis dataKey="day" stroke="var(--text-2)" />
+                <YAxis domain={[0, 5]} stroke="var(--text-2)" />
+                <Tooltip contentStyle={tooltipStyle} />
+                <Line dataKey="mood" stroke="var(--success)" />
+                <Line dataKey="energy" stroke="var(--warning)" />
+              </LineChart>
+            </ChartPanel>
+            <ChartPanel title="Recent period trend">
+              <LineChart data={stats.trend}>
+                <CartesianGrid stroke="var(--border)" strokeDasharray="3 3" />
+                <XAxis dataKey="label" stroke="var(--text-2)" interval="preserveStartEnd" />
+                <YAxis stroke="var(--text-2)" />
+                <Tooltip contentStyle={tooltipStyle} />
+                <Line dataKey="hours" stroke="var(--accent)" />
+              </LineChart>
+            </ChartPanel>
+          </div>
+          <div className="panel">
+            <div className="flex gap-2 mb-3">
+              <select className="select max-w-xs" value={subjectFilter} onChange={(e) => setSubjectFilter(e.target.value)}>
+                <option value="">All subjects</option>
+                {subjects.map((s) => <option key={s.id} value={s.id}>{s.name}</option>)}
+              </select>
+            </div>
+            <FixedSessionList sessions={filtered} />
+          </div>
+          <div className="panel">
+            <h2 className="font-bold mb-3">Goal Progress</h2>
+            <FixedGoalProgress goals={goals} />
+          </div>
+        </>
+      )}
       {showReport && <WeeklyReport onClose={() => setShowReport(false)} />}
     </section>
   );
+}
+
+interface SubjectStatsRow {
+  id: number | null;
+  name: string;
+  color: string;
+  seconds: number;
+  sessions: number;
+  averageSeconds: number;
+  percent: number;
+}
+
+interface ChartBucket {
+  label: string;
+  shortLabel?: string;
+  color?: string;
+  seconds: number;
+  hours: number;
+  minutes: number;
+}
+
+interface StudyStats {
+  periodLabel: string;
+  sessions: Session[];
+  totalSeconds: number;
+  sessionCount: number;
+  averageSessionSeconds: number;
+  longestSessionSeconds: number;
+  daysStudied: number;
+  averageActiveDaySeconds: number;
+  streak: { current: number; best: number };
+  subjectRows: SubjectStatsRow[];
+  subjectChart: ChartBucket[];
+  topSubject: SubjectStatsRow | null;
+  hourRows: ChartBucket[];
+  topHour: ChartBucket;
+  weekdayRows: ChartBucket[];
+  topWeekday: ChartBucket;
+  bestDay: ChartBucket;
+  bestWeek: ChartBucket;
+  bestMonth: ChartBucket;
+  sessionTypeRows: ChartBucket[];
+  trend: ChartBucket[];
+}
+
+function InsightCard({ label, value, detail }: { label: string; value: string; detail: string }) {
+  return (
+    <div className="panel insight-card">
+      <div className="small">{label}</div>
+      <div className="insight-value">{value}</div>
+      <div className="small">{detail}</div>
+    </div>
+  );
+}
+
+function RecordRow({ label, value, detail }: { label: string; value: string; detail: string }) {
+  return (
+    <div className="stat-row">
+      <div>
+        <div className="font-bold">{value}</div>
+        <div className="small">{label}</div>
+      </div>
+      <div className="font-bold">{detail}</div>
+    </div>
+  );
+}
+
+function SubjectLeaderboard({ rows }: { rows: SubjectStatsRow[] }) {
+  if (rows.length === 0) return <EmptyState icon={BookOpen} message="No subject time in this period." />;
+  return (
+    <div className="leaderboard-list">
+      {rows.map((row, index) => (
+        <div key={`${row.id ?? 'unassigned'}-${row.name}`} className="leaderboard-row">
+          <div className="leaderboard-main">
+            <span className="rank-pill">{index + 1}</span>
+            <span className="subject-dot" style={{ background: row.color, color: row.color }} />
+            <div className="min-w-0">
+              <div className="font-bold truncate">{row.name}</div>
+              <div className="small">{row.sessions} sessions - Avg {formatDuration(row.averageSeconds)}</div>
+            </div>
+          </div>
+          <div className="leaderboard-stats">
+            <strong>{formatDuration(row.seconds)}</strong>
+            <span>{row.percent}%</span>
+          </div>
+          <div className="progress-track">
+            <div className="progress-fill" style={{ width: `${row.percent}%`, background: row.color }} />
+          </div>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function buildStudyStats(sessions: Session[], subjects: Subject[], period: StatsPeriod): StudyStats {
+  const completed = sessions.filter(isCompletedSession);
+  const scoped = filterSessionsByPeriod(completed, period);
+  const totalSeconds = scoped.reduce((sum, session) => sum + sessionDuration(session), 0);
+  const activeDays = new Set(scoped.map((session) => dateKey(session.started_at)));
+  const subjectRows = buildSubjectStats(scoped, subjects, totalSeconds);
+  const hourRows = buildHourRows(scoped);
+  const weekdayRows = buildWeekdayRows(scoped);
+  const sessionTypeRows = buildSessionTypeRows(scoped);
+
+  return {
+    periodLabel: periodLabel(period),
+    sessions: scoped,
+    totalSeconds,
+    sessionCount: scoped.length,
+    averageSessionSeconds: scoped.length ? Math.round(totalSeconds / scoped.length) : 0,
+    longestSessionSeconds: Math.max(0, ...scoped.map(sessionDuration)),
+    daysStudied: activeDays.size,
+    averageActiveDaySeconds: activeDays.size ? Math.round(totalSeconds / activeDays.size) : 0,
+    streak: calculateDailyStreak(scoped),
+    subjectRows,
+    subjectChart: subjectRows.map((row) => toChartBucket(row.name, row.seconds, row.name, row.color)),
+    topSubject: subjectRows[0] || null,
+    hourRows,
+    topHour: maxBucket(hourRows),
+    weekdayRows,
+    topWeekday: maxBucket(weekdayRows),
+    bestDay: maxBucket(groupSessions(scoped, (session) => dateKey(session.started_at), (session) => formatShortDate(session.started_at))),
+    bestWeek: maxBucket(groupSessions(scoped, (session) => String(startOfWeek(new Date(session.started_at))), (session) => formatWeekRange(startOfWeek(new Date(session.started_at))))),
+    bestMonth: maxBucket(groupSessions(scoped, (session) => monthKey(session.started_at), (session) => formatMonthLabel(session.started_at))),
+    sessionTypeRows,
+    trend: buildTrend(completed, scoped, period)
+  };
+}
+
+function isCompletedSession(session: Session) {
+  return sessionDuration(session) > 0;
+}
+
+function sessionDuration(session: Session) {
+  return Math.max(0, session.duration_seconds || 0);
+}
+
+function filterSessionsByPeriod(sessions: Session[], period: StatsPeriod) {
+  const range = periodRange(period);
+  if (!range) return sessions;
+  return sessions.filter((session) => session.started_at >= range.start && session.started_at < range.end);
+}
+
+function periodRange(period: StatsPeriod): { start: number; end: number } | null {
+  const nowDate = new Date();
+  if (period === 'lifetime') return null;
+  if (period === 'week') {
+    const start = startOfWeek(nowDate);
+    return { start, end: start + 7 * dayMs };
+  }
+  if (period === 'month') {
+    const start = new Date(nowDate.getFullYear(), nowDate.getMonth(), 1).getTime();
+    const end = new Date(nowDate.getFullYear(), nowDate.getMonth() + 1, 1).getTime();
+    return { start, end };
+  }
+  const start = new Date(nowDate.getFullYear(), 0, 1).getTime();
+  return { start, end: new Date(nowDate.getFullYear() + 1, 0, 1).getTime() };
+}
+
+function periodLabel(period: StatsPeriod) {
+  const nowDate = new Date();
+  if (period === 'week') return `This week (${formatWeekRange(startOfWeek(nowDate))})`;
+  if (period === 'month') return nowDate.toLocaleDateString(undefined, { month: 'long', year: 'numeric' });
+  if (period === 'year') return String(nowDate.getFullYear());
+  return 'Lifetime';
+}
+
+function buildSubjectStats(sessions: Session[], subjects: Subject[], totalSeconds: number): SubjectStatsRow[] {
+  const subjectsById = new Map(subjects.map((subject) => [subject.id, subject]));
+  const rows = new Map<string, SubjectStatsRow>();
+  for (const session of sessions) {
+    const id = session.subject_id ?? null;
+    const subject = id === null ? undefined : subjectsById.get(id);
+    const key = id === null ? 'unassigned' : String(id);
+    const existing = rows.get(key) ?? {
+      id,
+      name: subject?.name || 'Unassigned',
+      color: subject?.color || 'var(--accent)',
+      seconds: 0,
+      sessions: 0,
+      averageSeconds: 0,
+      percent: 0
+    };
+    existing.seconds += sessionDuration(session);
+    existing.sessions += 1;
+    rows.set(key, existing);
+  }
+  return [...rows.values()]
+    .map((row) => ({
+      ...row,
+      averageSeconds: row.sessions ? Math.round(row.seconds / row.sessions) : 0,
+      percent: totalSeconds ? Math.round((row.seconds / totalSeconds) * 100) : 0
+    }))
+    .sort((a, b) => b.seconds - a.seconds);
+}
+
+function buildHourRows(sessions: Session[]): ChartBucket[] {
+  const totals = Array.from({ length: 24 }, () => 0);
+  for (const session of sessions) totals[new Date(session.started_at).getHours()] += sessionDuration(session);
+  return totals.map((seconds, hour) => toChartBucket(formatHourRange(hour), seconds, formatHour(hour)));
+}
+
+function buildWeekdayRows(sessions: Session[]): ChartBucket[] {
+  const labels = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
+  const totals = Array.from({ length: 7 }, () => 0);
+  for (const session of sessions) totals[(new Date(session.started_at).getDay() + 6) % 7] += sessionDuration(session);
+  return totals.map((seconds, index) => toChartBucket(labels[index], seconds));
+}
+
+function buildSessionTypeRows(sessions: Session[]): ChartBucket[] {
+  const labels: Record<SessionType, string> = { pomodoro: 'Pomodoro', custom: 'Custom', freeform: 'Freeform' };
+  const totals: Record<SessionType, number> = { pomodoro: 0, custom: 0, freeform: 0 };
+  for (const session of sessions) {
+    const type = session.session_type in totals ? session.session_type : 'custom';
+    totals[type] += sessionDuration(session);
+  }
+  return (Object.keys(labels) as SessionType[]).map((type) => toChartBucket(labels[type], totals[type]));
+}
+
+function groupSessions(sessions: Session[], keyFor: (session: Session) => string, labelFor: (session: Session) => string): ChartBucket[] {
+  const rows = new Map<string, { label: string; seconds: number }>();
+  for (const session of sessions) {
+    const key = keyFor(session);
+    const existing = rows.get(key) ?? { label: labelFor(session), seconds: 0 };
+    existing.seconds += sessionDuration(session);
+    rows.set(key, existing);
+  }
+  return [...rows.values()].map((row) => toChartBucket(row.label, row.seconds));
+}
+
+function buildTrend(allSessions: Session[], scoped: Session[], period: StatsPeriod): ChartBucket[] {
+  const nowDate = new Date();
+  if (period === 'week') {
+    const start = startOfWeek(nowDate);
+    return Array.from({ length: 7 }, (_, day) => {
+      const time = start + day * dayMs;
+      return toChartBucket(new Date(time).toLocaleDateString(undefined, { weekday: 'short' }), sumBetween(scoped, time, time + dayMs));
+    });
+  }
+  if (period === 'month') {
+    const start = new Date(nowDate.getFullYear(), nowDate.getMonth(), 1).getTime();
+    const days = new Date(nowDate.getFullYear(), nowDate.getMonth() + 1, 0).getDate();
+    return Array.from({ length: days }, (_, day) => {
+      const time = start + day * dayMs;
+      return toChartBucket(String(day + 1), sumBetween(scoped, time, time + dayMs));
+    });
+  }
+  if (period === 'year') {
+    return Array.from({ length: 12 }, (_, month) => {
+      const start = new Date(nowDate.getFullYear(), month, 1).getTime();
+      const end = new Date(nowDate.getFullYear(), month + 1, 1).getTime();
+      return toChartBucket(new Date(start).toLocaleDateString(undefined, { month: 'short' }), sumBetween(scoped, start, end));
+    });
+  }
+  if (allSessions.length === 0) return [];
+  const first = Math.min(...allSessions.map((session) => session.started_at));
+  const firstDate = new Date(first);
+  const monthCount = (nowDate.getFullYear() - firstDate.getFullYear()) * 12 + nowDate.getMonth() - firstDate.getMonth() + 1;
+  if (monthCount > 18) {
+    return Array.from({ length: nowDate.getFullYear() - firstDate.getFullYear() + 1 }, (_, offset) => {
+      const year = firstDate.getFullYear() + offset;
+      return toChartBucket(String(year), sumBetween(allSessions, new Date(year, 0, 1).getTime(), new Date(year + 1, 0, 1).getTime()));
+    });
+  }
+  return Array.from({ length: monthCount }, (_, offset) => {
+    const date = new Date(firstDate.getFullYear(), firstDate.getMonth() + offset, 1);
+    const start = date.getTime();
+    const end = new Date(date.getFullYear(), date.getMonth() + 1, 1).getTime();
+    return toChartBucket(date.toLocaleDateString(undefined, { month: 'short', year: '2-digit' }), sumBetween(allSessions, start, end));
+  });
+}
+
+function sumBetween(sessions: Session[], start: number, end: number) {
+  return sessions.filter((session) => session.started_at >= start && session.started_at < end).reduce((sum, session) => sum + sessionDuration(session), 0);
+}
+
+function maxBucket(rows: ChartBucket[]): ChartBucket {
+  const fallback = toChartBucket('None', 0);
+  return rows.reduce((best, row) => row.seconds > best.seconds ? row : best, fallback);
+}
+
+function toChartBucket(label: string, seconds: number, shortLabel?: string, color?: string): ChartBucket & { color?: string } {
+  return {
+    label,
+    shortLabel,
+    seconds,
+    hours: Number((seconds / 3600).toFixed(2)),
+    minutes: Number((seconds / 60).toFixed(1)),
+    color
+  };
+}
+
+function monthKey(timestamp: number) {
+  const date = new Date(timestamp);
+  return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}`;
+}
+
+function formatShortDate(timestamp: number) {
+  return new Date(timestamp).toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
+}
+
+function formatMonthLabel(timestamp: number) {
+  return new Date(timestamp).toLocaleDateString(undefined, { month: 'short', year: 'numeric' });
+}
+
+function formatWeekRange(start: number) {
+  const end = start + 6 * dayMs;
+  return `${formatShortDate(start)} - ${formatShortDate(end)}`;
+}
+
+function formatHour(hour: number) {
+  const h = hour % 12 || 12;
+  return `${h} ${hour >= 12 ? 'PM' : 'AM'}`;
+}
+
+function formatHourRange(hour: number) {
+  return `${formatHour(hour)} - ${formatHour((hour + 1) % 24)}`;
 }
 
 function FlashcardsPage({ mini }: { mini: boolean }) {
