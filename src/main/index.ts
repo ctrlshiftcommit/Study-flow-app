@@ -5,6 +5,7 @@ import { createTray } from './tray';
 import { registerIpc } from './ipc';
 import { runBackup } from './backup';
 import { readSettings } from './ipc';
+import { startBrowserBridge, stopBrowserBridge } from './browserBridge';
 
 process.env.ELECTRON_DISABLE_SECURITY_WARNINGS = 'true';
 app.commandLine.appendSwitch('js-flags', '--max-old-space-size=256');
@@ -106,6 +107,7 @@ function createWindow(): BrowserWindow {
   });
 
   registerIpc(win);
+  startBrowserBridge(win, readSettings);
   createTray(win);
   scheduleBackups();
   return win;
@@ -142,6 +144,7 @@ app.whenReady().then(() => {
 
 app.on('before-quit', () => {
   isQuitting = true;
+  stopBrowserBridge();
   const settings = readSettings();
   if (settings.autoBackupEnabled) runBackup(settings.notes_dir, settings.backup_dir);
 });

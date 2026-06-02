@@ -34,6 +34,9 @@ const api: StudyFlowApi = {
   deleteNote: (id) => ipcRenderer.invoke('delete-note', { id }),
   exportNote: (id, format) => ipcRenderer.invoke('export-note', { id, format }),
   runBackup: () => ipcRenderer.invoke('run-backup'),
+  getBrowserBridgeStatus: () => ipcRenderer.invoke('browser-bridge:status'),
+  setBrowserManualState: (state) => ipcRenderer.invoke('browser-bridge:manual-state', state),
+  respondToBrowserConflict: (merge) => ipcRenderer.invoke('browser-bridge:conflict-response', { merge }),
   onTimerSettings: (callback) => {
     const listener = (_event: IpcRendererEvent, settings: Parameters<typeof callback>[0]) => callback(settings);
     ipcRenderer.on('timer:settings', listener);
@@ -43,6 +46,16 @@ const api: StudyFlowApi = {
     const listener = (_event: IpcRendererEvent, command: Parameters<typeof callback>[0]) => callback(command);
     ipcRenderer.on('timer:command', listener);
     return () => ipcRenderer.removeListener('timer:command', listener);
+  },
+  onBrowserConflict: (callback) => {
+    const listener = (_event: IpcRendererEvent, event: Parameters<typeof callback>[0]) => callback(event);
+    ipcRenderer.on('browser:conflict', listener);
+    return () => ipcRenderer.removeListener('browser:conflict', listener);
+  },
+  onBrowserMerged: (callback) => {
+    const listener = (_event: IpcRendererEvent, event: Parameters<typeof callback>[0]) => callback(event);
+    ipcRenderer.on('browser:merged', listener);
+    return () => ipcRenderer.removeListener('browser:merged', listener);
   }
 };
 

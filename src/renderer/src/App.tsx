@@ -51,7 +51,7 @@ import { useStudyStore } from './store/useStudyStore';
 import { GoalModal } from './components/GoalModal';
 import { Modal as SharedModal } from './components/Modal';
 import { PageHeader } from './components/PageHeader';
-import type { ChecklistItem, Flashcard, FlashcardRating, Goal, Note, NoteSummary, Priority, Session, SessionType, Settings, Subject, Task, TimerCommand } from '@shared/types';
+import type { BrowserBridgeStatus, BrowserClassRule, BrowserConflictEvent, ChecklistItem, Flashcard, FlashcardRating, Goal, Note, NoteSummary, Priority, Session, SessionType, Settings, Subject, Task, TimerCommand } from '@shared/types';
 import { calculateNextReview } from './utils/sm2';
 import { badges, calculateDailyStreak } from './utils/achievements';
 import { dateKey, dayMs, endOfDay, formatDuration, formatTimer, startOfDay, startOfWeek } from './utils/time';
@@ -111,6 +111,7 @@ export default function App() {
   const store = useStudyStore();
   const [page, setPage] = useState<Page>('dashboard');
   const [quickStartSubjectId, setQuickStartSubjectId] = useState<number | null>(null);
+  const [browserConflict, setBrowserConflict] = useState<BrowserConflictEvent | null>(null);
 
   useEffect(() => {
     store.refresh().catch((error) => store.setToast(String(error)));
@@ -121,6 +122,8 @@ export default function App() {
       store.refresh().catch((error) => store.setToast(String(error)));
     });
   }, []);
+
+  useEffect(() => window.studyflow.onBrowserConflict(setBrowserConflict), []);
 
   useEffect(() => {
     if (!store.settings) return;
@@ -217,8 +220,24 @@ export default function App() {
         </main>
       </div>
       {store.toast && <div className="toast">{store.toast}</div>}
+      {browserConflict && (
+        <Modal title="Merge browser class tracking?" onClose={() => void resolveBrowserConflict(false)}>
+          <p className="text-muted">A playing class was detected while your manual timer is active. Merge its browser metadata into this session?</p>
+          <div className="small mt-2">{browserConflict.title || browserConflict.url}</div>
+          <div className="modal-actions">
+            <button className="button" onClick={() => void resolveBrowserConflict(false)}>Keep manual only</button>
+            <button className="button primary" onClick={() => void resolveBrowserConflict(true)}>Merge tracking</button>
+          </div>
+        </Modal>
+      )}
     </div>
   );
+
+  async function resolveBrowserConflict(merge: boolean) {
+    await window.studyflow.respondToBrowserConflict(merge);
+    setBrowserConflict(null);
+    store.setToast(merge ? 'Browser class tracking merged into this session' : 'Browser tracking ignored until this session ends');
+  }
 }
 
 function Dashboard({ onStart }: { onStart: (subjectId: number) => void }) {
@@ -288,6 +307,7 @@ function TimerPage({ quickStartSubjectId, onQuickStartConsumed }: { quickStartSu
   const [sessionStreak, setSessionStreak] = useState(0);
   const [post, setPost] = useState({ mood: 3, energy: 3, note: '' });
   const [focusModeActive, setFocusModeActive] = useState(false);
+  const [browserMetadata, setBrowserMetadata] = useState<BrowserConflictEvent | null>(null);
   const ambientRef = useRef<Howl | null>(null);
   const totalSeconds = phaseDuration(phase, mode, customMinutes, store.settings!);
   const subject = store.subjects.find((s) => s.id === subjectId) || store.subjects[0];
@@ -325,6 +345,13 @@ function TimerPage({ quickStartSubjectId, onQuickStartConsumed }: { quickStartSu
     const label = running ? (phase === 'focus' ? formatTimer(remaining) : 'BREAK') : paused ? 'PAUSED' : 'IDLE';
     window.studyflow.trayUpdate({ label, state: running ? 'running' : paused ? 'paused' : 'idle', canSkip: hasActiveInterval && !showPost }).catch(() => undefined);
   }, [running, phase, remaining, paused, hasActiveInterval, showPost]);
+
+  useEffect(() => {
+    void window.studyflow.setBrowserManualState({ active: phase === 'focus' && startedAt !== null });
+    return () => { void window.studyflow.setBrowserManualState({ active: false }); };
+  }, [phase, startedAt]);
+
+  useEffect(() => window.studyflow.onBrowserMerged(setBrowserMetadata), []);
 
   useEffect(() => {
     if (!running || !store.settings) return;
@@ -383,9 +410,9 @@ function TimerPage({ quickStartSubjectId, onQuickStartConsumed }: { quickStartSu
     const start = startedAt || end - totalSeconds * 1000;
     const duration = Math.max(60, Math.round((end - start) / 1000));
     await window.studyflow.run(
-      `INSERT INTO sessions(subject_id,started_at,ended_at,duration_seconds,session_type,mood_before,mood_after,energy_before,energy_after,note,intention,goal,goal_achieved)
-       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`,
-      [subject?.id ?? null, start, end, duration, mode, moodBefore, post.mood, energyBefore, post.energy, post.note, intention, sessionGoal, goalAchieved || null]
+      `INSERT INTO sessions(subject_id,started_at,ended_at,duration_seconds,session_type,mood_before,mood_after,energy_before,energy_after,note,intention,goal,goal_achieved,source,tags,source_url,source_title)
+       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+      [subject?.id ?? null, start, end, duration, mode, moodBefore, post.mood, energyBefore, post.energy, post.note, intention, sessionGoal, goalAchieved || null, browserMetadata ? 'manual_browser' : 'manual', JSON.stringify(browserMetadata ? ['manual', 'browser-auto', 'class'] : ['manual']), browserMetadata?.url || null, browserMetadata?.title || null]
     );
     await resetChecklistForNextSession();
     setShowPost(false);
@@ -393,6 +420,7 @@ function TimerPage({ quickStartSubjectId, onQuickStartConsumed }: { quickStartSu
     setSessionGoal('');
     setGoalAchieved('');
     setPost({ mood: 3, energy: 3, note: '' });
+    setBrowserMetadata(null);
     setStartedAt(null);
     await afterSessionSaved();
     const nextPhase: TimerPhase = mode === 'pomodoro' && (pomodoroCount + 1) % 4 === 0 ? 'longBreak' : 'shortBreak';
@@ -472,6 +500,7 @@ function TimerPage({ quickStartSubjectId, onQuickStartConsumed }: { quickStartSu
     setRunning(false);
     setSessionStreak(0);
     setStartedAt(null);
+    setBrowserMetadata(null);
     setPhase('focus');
     setRemaining(phaseDuration('focus', mode, customMinutes, store.settings!));
     void setFocusMode(false);
@@ -1618,6 +1647,7 @@ function SettingsPage() {
   const store = useStudyStore();
   const [settings, setSettings] = useState<Settings>(store.settings!);
   const [savedFields, setSavedFields] = useState<Record<string, boolean>>({});
+  const [bridgeStatus, setBridgeStatus] = useState<BrowserBridgeStatus | null>(null);
   const debounceRef = useRef<Record<string, number>>({});
 
   useEffect(() => {
@@ -1628,6 +1658,13 @@ function SettingsPage() {
       if (store.settings) setSettings(store.settings);
     });
   }, []);
+
+  useEffect(() => {
+    const refreshStatus = () => window.studyflow.getBrowserBridgeStatus().then(setBridgeStatus).catch(() => setBridgeStatus(null));
+    void refreshStatus();
+    const id = window.setInterval(refreshStatus, 5000);
+    return () => window.clearInterval(id);
+  }, [settings.browserLoggingEnabled]);
 
   async function persist(field: string, next: Settings) {
     setSettings(next);
@@ -1648,6 +1685,24 @@ function SettingsPage() {
     debounceRef.current[field] = window.setTimeout(() => {
       void persist(field, next);
     }, 400);
+  }
+
+  function addBrowserRule() {
+    void persist('browserClassRules', {
+      ...settings,
+      browserClassRules: [...settings.browserClassRules, { id: crypto.randomUUID(), pattern: '', subjectId: null }]
+    });
+  }
+
+  function updateBrowserRule(id: string, patch: Partial<BrowserClassRule>) {
+    debouncedPersist('browserClassRules', {
+      ...settings,
+      browserClassRules: settings.browserClassRules.map((rule) => rule.id === id ? { ...rule, ...patch } : rule)
+    });
+  }
+
+  function removeBrowserRule(id: string) {
+    void persist('browserClassRules', { ...settings, browserClassRules: settings.browserClassRules.filter((rule) => rule.id !== id) });
   }
 
   async function clearData() {
@@ -1718,6 +1773,35 @@ function SettingsPage() {
             <button className="button" onClick={async () => store.setToast((await window.studyflow.exportJson()) || 'Export cancelled')}>Export JSON</button>
             <button className="button" onClick={async () => { await window.studyflow.importJson('merge'); await store.refresh(); }}>Import JSON</button>
             <button className="button danger" onClick={clearData}>Clear all data</button>
+          </div>
+        </SettingsPanel>
+        <SettingsPanel title="Browser Class Logging">
+          <Toggle label="Enable private Brave/Chromium class logging" checked={settings.browserLoggingEnabled} saved={savedFields.browserLoggingEnabled} onChange={(v) => persist('browserLoggingEnabled', { ...settings, browserLoggingEnabled: v })} />
+          <div className="small">Bridge: {bridgeStatus?.running ? `online at http://${bridgeStatus.host}:${bridgeStatus.port}` : 'offline'} · localhost only</div>
+          <Field label="Pairing token">
+            <div className="inline-control">
+              <input className="input" readOnly value={settings.browserPairingToken} />
+              <button className="button" onClick={async () => { await navigator.clipboard.writeText(settings.browserPairingToken); store.setToast('Pairing token copied'); }}><Copy size={15} /> Copy</button>
+              <button className="button" onClick={() => void persist('browserPairingToken', { ...settings, browserPairingToken: makePairingToken() })}>Rotate</button>
+            </div>
+          </Field>
+          <div className="small">Load the unpacked <strong>browser-extension</strong> folder from <strong>brave://extensions</strong>, open its options page, and paste this token.</div>
+          <div className="space-y-2">
+            <div className="flex items-center justify-between gap-2">
+              <span className="label">Approved class URLs</span>
+              <button className="button" onClick={addBrowserRule}><Plus size={15} /> Add URL</button>
+            </div>
+            {settings.browserClassRules.length === 0 && <div className="small">Add a full URL or wildcard pattern, for example https://classes.example.com/*</div>}
+            {settings.browserClassRules.map((rule) => (
+              <div className="browser-rule-row" key={rule.id}>
+                <input className="input" placeholder="https://classes.example.com/*" value={rule.pattern} onChange={(e) => updateBrowserRule(rule.id, { pattern: e.target.value })} />
+                <select className="select" value={rule.subjectId ?? ''} onChange={(e) => updateBrowserRule(rule.id, { subjectId: e.target.value ? Number(e.target.value) : null })}>
+                  <option value="">Unassigned</option>
+                  {store.subjects.map((subject) => <option key={subject.id} value={subject.id}>{subject.name}</option>)}
+                </select>
+                <button className="button danger icon-only" title="Remove URL rule" onClick={() => removeBrowserRule(rule.id)}><Trash2 size={15} /></button>
+              </div>
+            ))}
           </div>
         </SettingsPanel>
         <SettingsPanel title="Feedback">
@@ -1798,7 +1882,7 @@ function FixedMatrixCell({ title, tasks }: { title: string; tasks: Task[] }) {
 
 function FixedSessionList({ sessions }: { sessions: Session[] }) {
   const { subjects } = useStudyStore();
-  return <div className="space-y-2">{sessions.length === 0 && <EmptyState icon={Clock3} message="No sessions yet." />}{sessions.map((session) => { const s = subjects.find((x) => x.id === session.subject_id); return <div key={session.id} className="session-row"><div><div className="font-bold"><span style={{ color: s?.color }}>*</span> {s?.name || 'Unassigned'}</div><div className="small">{new Date(session.started_at).toLocaleString()} · mood {session.mood_after || '-'}/5</div></div><div className="font-bold">{formatDuration(session.duration_seconds || 0)}</div></div>; })}</div>;
+  return <div className="space-y-2">{sessions.length === 0 && <EmptyState icon={Clock3} message="No sessions yet." />}{sessions.map((session) => { const s = subjects.find((x) => x.id === session.subject_id); return <div key={session.id} className="session-row"><div><div className="font-bold"><span style={{ color: s?.color }}>*</span> {s?.name || 'Unassigned'} <span className="small">{sessionSourceLabel(session)}</span></div><div className="small">{new Date(session.started_at).toLocaleString()} · mood {session.mood_after || '-'}/5</div></div><div className="font-bold">{formatDuration(session.duration_seconds || 0)}</div></div>; })}</div>;
 }
 
 function FixedGoalProgress({ goals, onDelete }: { goals: Goal[]; onDelete?: (goal: Goal) => void | Promise<void> }) {
@@ -2016,6 +2100,12 @@ function formatHeatmapMinutes(minutes: number) {
   return `${m}m`;
 }
 
+function sessionSourceLabel(session: Session) {
+  if (session.source === 'browser') return 'browser class';
+  if (session.source === 'manual_browser') return 'manual + browser class';
+  return 'manual';
+}
+
 function relativeTime(value: number | string) {
   const time = typeof value === 'number' ? value : Number(value) || new Date(value).getTime();
   const diff = Date.now() - time;
@@ -2088,4 +2178,9 @@ function lightenHex(hex: string, amount: number) {
   const { r, g, b } = hexToRgb(hex);
   const channel = (value: number) => Math.min(255, value + amount).toString(16).padStart(2, '0');
   return `#${channel(r)}${channel(g)}${channel(b)}`;
+}
+
+function makePairingToken() {
+  const bytes = crypto.getRandomValues(new Uint8Array(18));
+  return Array.from(bytes, (value) => value.toString(16).padStart(2, '0')).join('');
 }

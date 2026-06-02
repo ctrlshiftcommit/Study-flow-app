@@ -1,0 +1,22 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8">
+    <title>StudyFlow Browser Class Logging</title>
+    <link rel="stylesheet" href="options.css">
+  </head>
+  <body>
+    <main>
+      <h1>StudyFlow Browser Class Logging</h1>
+      <p>Paste the pairing token shown in StudyFlow Settings. Requests stay on <code>127.0.0.1</code>.</p>
+      <label for="token">Pairing token</label>
+      <input id="token" autocomplete="off" spellcheck="false">
+      <div class="actions">
+        <button id="save">Save and test connection</button>
+        <span id="status"></span>
+      </div>
+      <p class="note">Approved class URL rules are managed inside StudyFlow. Logging starts only for an approved active tab with playing video and audible audio.</p>
+    </main>
+    <script src="options.js"></script>
+  </body>
+</html>

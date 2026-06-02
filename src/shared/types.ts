@@ -5,6 +5,27 @@ export type ThemeMode = 'dark' | 'light' | 'system';
 export type FlashcardRating = 'again' | 'hard' | 'good' | 'easy';
 export type TimerCommand = 'start' | 'pause' | 'resume' | 'skip';
 export type TrayTimerState = 'idle' | 'running' | 'paused';
+export type SessionSource = 'manual' | 'browser' | 'manual_browser';
+export type BrowserClassEventType = 'class-active' | 'class-paused' | 'class-ended' | 'heartbeat';
+
+export interface BrowserClassRule {
+  id: string;
+  pattern: string;
+  subjectId: number | null;
+}
+
+export interface BrowserBridgeStatus {
+  running: boolean;
+  host: string;
+  port: number;
+  enabled: boolean;
+  paired: boolean;
+}
+
+export interface BrowserConflictEvent {
+  url: string;
+  title: string;
+}
 
 export interface TrayTimerStatus {
   label: string;
@@ -46,6 +67,10 @@ export interface Session {
   intention?: string | null;
   goal?: string | null;
   goal_achieved?: string | null;
+  source: SessionSource;
+  tags: string;
+  source_url?: string | null;
+  source_title?: string | null;
 }
 
 export interface Goal {
@@ -134,6 +159,9 @@ export interface Settings {
   backup_dir: string;
   autoBackupEnabled: boolean;
   lastBackupAt: string;
+  browserLoggingEnabled: boolean;
+  browserPairingToken: string;
+  browserClassRules: BrowserClassRule[];
 }
 
 export interface DbRunResult {
@@ -173,8 +201,13 @@ export interface StudyFlowApi {
   deleteNote(id: number): Promise<boolean>;
   exportNote(id: number, format: 'md' | 'html'): Promise<string | null>;
   runBackup(): Promise<{ path: string; files: number; message: string; completedAt: string }>;
+  getBrowserBridgeStatus(): Promise<BrowserBridgeStatus>;
+  setBrowserManualState(state: { active: boolean }): Promise<void>;
+  respondToBrowserConflict(merge: boolean): Promise<void>;
   onTimerSettings(callback: (settings: Pick<Settings, 'pomodoroFocus' | 'shortBreak' | 'longBreak'>) => void): () => void;
   onTimerCommand(callback: (command: TimerCommand) => void): () => void;
+  onBrowserConflict(callback: (event: BrowserConflictEvent) => void): () => void;
+  onBrowserMerged(callback: (event: BrowserConflictEvent) => void): () => void;
 }
 
 declare global {

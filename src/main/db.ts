@@ -2,6 +2,7 @@ import Database from 'better-sqlite3';
 import { app } from 'electron';
 import { mkdirSync } from 'node:fs';
 import { join } from 'node:path';
+import { randomBytes } from 'node:crypto';
 
 let db: Database.Database;
 
@@ -57,7 +58,11 @@ CREATE TABLE IF NOT EXISTS sessions (
   note TEXT,
   intention TEXT,
   goal TEXT DEFAULT '',
-  goal_achieved TEXT DEFAULT ''
+  goal_achieved TEXT DEFAULT '',
+  source TEXT DEFAULT 'manual',
+  tags TEXT DEFAULT '["manual"]',
+  source_url TEXT,
+  source_title TEXT
 );
 CREATE TABLE IF NOT EXISTS goals (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -124,6 +129,10 @@ CREATE TABLE IF NOT EXISTS weekly_reports (
 
   addColumnIfMissing('sessions', 'goal', "TEXT DEFAULT ''");
   addColumnIfMissing('sessions', 'goal_achieved', "TEXT DEFAULT ''");
+  addColumnIfMissing('sessions', 'source', "TEXT DEFAULT 'manual'");
+  addColumnIfMissing('sessions', 'tags', "TEXT DEFAULT '[\"manual\"]'");
+  addColumnIfMissing('sessions', 'source_url', 'TEXT');
+  addColumnIfMissing('sessions', 'source_title', 'TEXT');
   addColumnIfMissing('checklist_items', 'is_template', 'INTEGER NOT NULL DEFAULT 0');
   addColumnIfMissing('checklist_items', 'created_at', 'TEXT');
   addColumnIfMissing('notes', 'filename', 'TEXT');
@@ -177,6 +186,9 @@ export function defaultSettings() {
     notes_dir: '',
     backup_dir: '',
     autoBackupEnabled: true,
-    lastBackupAt: ''
+    lastBackupAt: '',
+    browserLoggingEnabled: false,
+    browserPairingToken: randomBytes(18).toString('hex'),
+    browserClassRules: []
   };
 }

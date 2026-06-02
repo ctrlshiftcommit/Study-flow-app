@@ -9,6 +9,7 @@ import { sendNotification, setNotificationsEnabled } from './notifications';
 import { setAutoLaunch } from './autolaunch';
 import { updateTray } from './tray';
 import { runBackup } from './backup';
+import { getBrowserBridgeStatus, notifyBrowserSettingsChanged, respondToBrowserConflict, setBrowserManualState } from './browserBridge';
 import type { Settings } from '../shared/types';
 
 const execAsync = promisify(exec);
@@ -43,10 +44,14 @@ export function registerIpc(mainWindow: BrowserWindow): void {
   ipcMain.handle('get-settings', () => readSettings());
   ipcMain.handle('save-settings', (_event, { settings }) => {
     runtimeSettings = saveSettings(settings as Settings);
+    notifyBrowserSettingsChanged();
     applyRuntimeSettings(runtimeSettings, mainWindow);
     mainWindow.webContents.send('settings:updated', runtimeSettings);
     return runtimeSettings;
   });
+  ipcMain.handle('browser-bridge:status', () => getBrowserBridgeStatus());
+  ipcMain.handle('browser-bridge:manual-state', (_event, { active }) => setBrowserManualState(Boolean(active)));
+  ipcMain.handle('browser-bridge:conflict-response', (_event, { merge }) => respondToBrowserConflict(Boolean(merge)));
 
   ipcMain.handle('get-checklist-items', (_event, { isTemplate }) => {
     return getDb().prepare('SELECT * FROM checklist_items WHERE is_template=? ORDER BY position ASC, id ASC').all(isTemplate ? 1 : 0);
