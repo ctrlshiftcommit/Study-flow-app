@@ -6,7 +6,7 @@ const api: StudyFlowApi = {
   query: (sql, params = []) => ipcRenderer.invoke('db:query', { sql, params }),
   get: (sql, params = []) => ipcRenderer.invoke('db:get', { sql, params }),
   run: (sql, params = []) => ipcRenderer.invoke('db:run', { sql, params }),
-  trayUpdate: (label) => ipcRenderer.invoke('tray:update', { label }),
+  trayUpdate: (status) => ipcRenderer.invoke('tray:update', status),
   notify: (title, body) => ipcRenderer.invoke('notification:send', { title, body }),
   exportCsv: () => ipcRenderer.invoke('export:csv'),
   exportJson: () => ipcRenderer.invoke('export:json'),
@@ -38,6 +38,11 @@ const api: StudyFlowApi = {
     const listener = (_event: IpcRendererEvent, settings: Parameters<typeof callback>[0]) => callback(settings);
     ipcRenderer.on('timer:settings', listener);
     return () => ipcRenderer.removeListener('timer:settings', listener);
+  },
+  onTimerCommand: (callback) => {
+    const listener = (_event: IpcRendererEvent, command: Parameters<typeof callback>[0]) => callback(command);
+    ipcRenderer.on('timer:command', listener);
+    return () => ipcRenderer.removeListener('timer:command', listener);
   }
 };
 

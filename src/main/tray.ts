@@ -1,8 +1,9 @@
 import { BrowserWindow, Menu, Tray, app, nativeImage } from 'electron';
 import { join } from 'node:path';
+import type { TrayTimerStatus } from '../shared/types';
 
 let tray: Tray | null = null;
-let status = 'IDLE';
+let status: TrayTimerStatus = { label: 'IDLE', state: 'idle', canSkip: false };
 
 export function createTray(mainWindow: BrowserWindow): Tray {
   const iconPath = join(__dirname, '../../assets/icons/tray.png');
@@ -20,17 +21,19 @@ export function createTray(mainWindow: BrowserWindow): Tray {
   return tray;
 }
 
-export function updateTray(label: string, mainWindow?: BrowserWindow): void {
-  status = label;
+export function updateTray(nextStatus: TrayTimerStatus, mainWindow?: BrowserWindow): void {
+  status = nextStatus;
   if (!tray) return;
-  tray.setToolTip(`StudyFlow - ${label}`);
+  tray.setToolTip(`StudyFlow - ${status.label}`);
+  const isIdle = status.state === 'idle';
+  const isRunning = status.state === 'running';
   tray.setContextMenu(
     Menu.buildFromTemplate([
-      { label: `Status: ${label}`, enabled: false },
+      { label: `Status: ${status.label}`, enabled: false },
       { type: 'separator' },
-      { label: 'Start Session', click: () => mainWindow?.webContents.send('timer:command', 'start') },
-      { label: 'Pause', click: () => mainWindow?.webContents.send('timer:command', 'pause') },
-      { label: 'Skip Break', click: () => mainWindow?.webContents.send('timer:command', 'skip') },
+      { label: 'Start Session', enabled: isIdle, click: () => mainWindow?.webContents.send('timer:command', 'start') },
+      { label: isRunning ? 'Pause' : 'Resume', enabled: !isIdle, click: () => mainWindow?.webContents.send('timer:command', isRunning ? 'pause' : 'resume') },
+      { label: 'Skip Interval', enabled: status.canSkip, click: () => mainWindow?.webContents.send('timer:command', 'skip') },
       { type: 'separator' },
       { label: 'Open App', click: () => mainWindow?.show() },
       { label: 'Quit', click: () => app.quit() }

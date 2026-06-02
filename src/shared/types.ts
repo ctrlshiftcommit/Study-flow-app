@@ -3,6 +3,14 @@ export type SessionType = 'pomodoro' | 'custom' | 'freeform';
 export type GoalPeriod = 'daily' | 'weekly';
 export type ThemeMode = 'dark' | 'light' | 'system';
 export type FlashcardRating = 'again' | 'hard' | 'good' | 'easy';
+export type TimerCommand = 'start' | 'pause' | 'resume' | 'skip';
+export type TrayTimerState = 'idle' | 'running' | 'paused';
+
+export interface TrayTimerStatus {
+  label: string;
+  state: TrayTimerState;
+  canSkip: boolean;
+}
 
 export interface Subject {
   id: number;
@@ -137,7 +145,7 @@ export interface StudyFlowApi {
   query<T = unknown>(sql: string, params?: unknown[]): Promise<T[]>;
   get<T = unknown>(sql: string, params?: unknown[]): Promise<T | undefined>;
   run(sql: string, params?: unknown[]): Promise<DbRunResult>;
-  trayUpdate(label: string): Promise<void>;
+  trayUpdate(status: TrayTimerStatus): Promise<void>;
   notify(title: string, body: string): Promise<void>;
   exportCsv(): Promise<string | null>;
   exportJson(): Promise<string | null>;
@@ -166,6 +174,7 @@ export interface StudyFlowApi {
   exportNote(id: number, format: 'md' | 'html'): Promise<string | null>;
   runBackup(): Promise<{ path: string; files: number; message: string; completedAt: string }>;
   onTimerSettings(callback: (settings: Pick<Settings, 'pomodoroFocus' | 'shortBreak' | 'longBreak'>) => void): () => void;
+  onTimerCommand(callback: (command: TimerCommand) => void): () => void;
 }
 
 declare global {

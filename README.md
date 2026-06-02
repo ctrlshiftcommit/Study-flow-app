@@ -7,15 +7,16 @@ The app is built with Electron, React, TypeScript, Tailwind CSS, Zustand, Rechar
 ## Features
 
 - Dashboard with today's study time, current streak, best streak, due flashcards, daily goals, recent sessions, and quick-start subject buttons.
-- Session timer with Pomodoro, custom, and freeform modes.
+- Session timer with Pomodoro, custom, and freeform modes, plus state-aware start, pause, resume, skip, and stop controls.
 - Pre-session workflow for setting an intention, checking a reusable checklist, and entering Focus Mode.
-- Post-session reflection with mood, energy, notes, and goal completion.
-- Subject manager with custom colors, icons, tasks, priorities, per-subject goals, and an Eisenhower matrix view.
-- Analytics for study logs, charts, weekly summaries, streaks, goals, and a 365-day study heatmap.
+- Before-and-after mood and energy reflection, post-session notes, and goal completion review.
+- Subject manager with custom colors, icons, tasks, priorities, selectable and removable per-subject goals, and an Eisenhower matrix view. Goal progress is calculated from existing study sessions for the active day or week.
+- Analytics tabs for overview metrics, subject rankings, time patterns, and session history.
+- Week, month, year, and lifetime statistics with streaks, records, time-of-day insights, session-type breakdowns, charts, goals, weekly summaries, and a 365-day study heatmap.
 - Flashcards with SM-2 spaced repetition, review ratings, due-card tracking, and break-review support.
 - Markdown notes with editing tools, preview, search, subject linking, and Markdown/HTML export.
 - Focus Mode with fullscreen support and an optional Windows process blocker for distracting apps.
-- Ambient sounds, bell alerts, desktop notifications, and tray timer status.
+- Ambient sounds, bell alerts, desktop notifications, tray timer status, and tray actions for starting, pausing, resuming, and skipping intervals.
 - Achievement badges for milestones such as study streaks, completed hours, Pomodoros, cards reviewed, and goals reached.
 - Settings for timer lengths, sounds, theme, accent color, notifications, auto-launch, notes location, backups, import, export, and data reset.
 - JSON and CSV export, JSON import, manual backups, and optional auto-backups.

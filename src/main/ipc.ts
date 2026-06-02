@@ -25,7 +25,7 @@ export function registerIpc(mainWindow: BrowserWindow): void {
     const info = getDb().prepare(sql).run(params);
     return { changes: info.changes, lastInsertRowid: Number(info.lastInsertRowid) };
   });
-  ipcMain.handle('tray:update', (_event, { label }) => updateTray(label, mainWindow));
+  ipcMain.handle('tray:update', (_event, status) => updateTray(status, mainWindow));
   ipcMain.handle('notification:send', (_event, { title, body }) => sendNotification(title, body));
   ipcMain.handle('export:csv', async () => exportCsv());
   ipcMain.handle('export:json', async () => exportJson());

@@ -51,7 +51,7 @@ import { useStudyStore } from './store/useStudyStore';
 import { GoalModal } from './components/GoalModal';
 import { Modal as SharedModal } from './components/Modal';
 import { PageHeader } from './components/PageHeader';
-import type { ChecklistItem, Flashcard, FlashcardRating, Goal, Note, NoteSummary, Priority, Session, SessionType, Settings, Subject, Task } from '@shared/types';
+import type { ChecklistItem, Flashcard, FlashcardRating, Goal, Note, NoteSummary, Priority, Session, SessionType, Settings, Subject, Task, TimerCommand } from '@shared/types';
 import { calculateNextReview } from './utils/sm2';
 import { badges, calculateDailyStreak } from './utils/achievements';
 import { dateKey, dayMs, endOfDay, formatDuration, formatTimer, startOfDay, startOfWeek } from './utils/time';
@@ -287,9 +287,12 @@ function TimerPage({ quickStartSubjectId, onQuickStartConsumed }: { quickStartSu
   const [pomodoroCount, setPomodoroCount] = useState(0);
   const [sessionStreak, setSessionStreak] = useState(0);
   const [post, setPost] = useState({ mood: 3, energy: 3, note: '' });
+  const [focusModeActive, setFocusModeActive] = useState(false);
   const ambientRef = useRef<Howl | null>(null);
   const totalSeconds = phaseDuration(phase, mode, customMinutes, store.settings!);
   const subject = store.subjects.find((s) => s.id === subjectId) || store.subjects[0];
+  const hasActiveInterval = startedAt !== null || phase !== 'focus';
+  const paused = hasActiveInterval && !running && !showPost;
 
   useEffect(() => {
     if (quickStartSubjectId) {
@@ -319,9 +322,9 @@ function TimerPage({ quickStartSubjectId, onQuickStartConsumed }: { quickStartSu
   }, [running, phase, startedAt, subjectId, mode, customMinutes, intention, post, pomodoroCount]);
 
   useEffect(() => {
-    const label = running ? (phase === 'focus' ? formatTimer(remaining) : 'BREAK') : 'IDLE';
-    window.studyflow.trayUpdate(label).catch(() => undefined);
-  }, [running, phase, remaining]);
+    const label = running ? (phase === 'focus' ? formatTimer(remaining) : 'BREAK') : paused ? 'PAUSED' : 'IDLE';
+    window.studyflow.trayUpdate({ label, state: running ? 'running' : paused ? 'paused' : 'idle', canSkip: hasActiveInterval && !showPost }).catch(() => undefined);
+  }, [running, phase, remaining, paused, hasActiveInterval, showPost]);
 
   useEffect(() => {
     if (!running || !store.settings) return;
@@ -338,7 +341,7 @@ function TimerPage({ quickStartSubjectId, onQuickStartConsumed }: { quickStartSu
     setStartedAt(now());
     setRemaining(totalSeconds);
     setRunning(true);
-    if (store.settings!.focusModeOnStart) await window.studyflow.focusModeSet(true);
+    if (store.settings!.focusModeOnStart) await setFocusMode(true);
     await scanBlockers();
   }
 
@@ -356,6 +359,7 @@ function TimerPage({ quickStartSubjectId, onQuickStartConsumed }: { quickStartSu
   }
 
   async function finishInterval() {
+    if (!hasActiveInterval) return;
     setRunning(false);
     bell(store.settings!);
     if (phase === 'focus') {
@@ -367,7 +371,10 @@ function TimerPage({ quickStartSubjectId, onQuickStartConsumed }: { quickStartSu
       const next = 'focus';
       setPhase(next);
       setRemaining(phaseDuration(next, mode, customMinutes, store.settings!));
-      if (store.settings!.autoStartFocus) setRunning(true);
+      if (store.settings!.autoStartFocus) {
+        setStartedAt(now());
+        setRunning(true);
+      }
     }
   }
 
@@ -386,6 +393,7 @@ function TimerPage({ quickStartSubjectId, onQuickStartConsumed }: { quickStartSu
     setSessionGoal('');
     setGoalAchieved('');
     setPost({ mood: 3, energy: 3, note: '' });
+    setStartedAt(null);
     await afterSessionSaved();
     const nextPhase: TimerPhase = mode === 'pomodoro' && (pomodoroCount + 1) % 4 === 0 ? 'longBreak' : 'shortBreak';
     setPhase(nextPhase);
@@ -398,7 +406,7 @@ function TimerPage({ quickStartSubjectId, onQuickStartConsumed }: { quickStartSu
     await store.refresh();
     await unlockAchievements();
     await checkGoals(subject?.id ?? null);
-    await window.studyflow.focusModeSet(false);
+    await setFocusMode(false);
   }
 
   async function unlockAchievements() {
@@ -464,9 +472,24 @@ function TimerPage({ quickStartSubjectId, onQuickStartConsumed }: { quickStartSu
     setRunning(false);
     setSessionStreak(0);
     setStartedAt(null);
-    setRemaining(totalSeconds);
-    window.studyflow.focusModeSet(false).catch(() => undefined);
+    setPhase('focus');
+    setRemaining(phaseDuration('focus', mode, customMinutes, store.settings!));
+    void setFocusMode(false);
   }
+
+  async function setFocusMode(enabled: boolean) {
+    await window.studyflow.focusModeSet(enabled);
+    setFocusModeActive(enabled);
+  }
+
+  useEffect(() => {
+    return window.studyflow.onTimerCommand((command: TimerCommand) => {
+      if (command === 'start' && !hasActiveInterval) requestStart();
+      if (command === 'pause' && running) setRunning(false);
+      if (command === 'resume' && paused) setRunning(true);
+      if (command === 'skip' && hasActiveInterval && !showPost) void finishInterval();
+    });
+  }, [hasActiveInterval, paused, running, showPost, phase, totalSeconds]);
 
   const progress = totalSeconds ? 1 - remaining / totalSeconds : 0;
   const ringColor = remaining <= 60 ? 'var(--danger)' : progress > 0.8 ? 'var(--warning)' : 'var(--accent)';
@@ -478,9 +501,10 @@ function TimerPage({ quickStartSubjectId, onQuickStartConsumed }: { quickStartSu
           <h1 className="text-3xl font-black">Session Timer</h1>
           <p className="text-muted">Session streak: {sessionStreak} focused rounds</p>
         </div>
-        <div className="flex gap-2">
-          <button className="button" onClick={() => window.studyflow.focusModeSet(true)}><Shield size={16} /> Start Focus Mode</button>
-          <button className="button" onClick={() => window.studyflow.focusModeSet(false)}>Exit Focus Mode</button>
+        <div className="flex flex-wrap gap-2">
+          <button className="button" onClick={() => void setFocusMode(!focusModeActive)}>
+            <Shield size={16} /> {focusModeActive ? 'Exit Focus Mode' : 'Start Focus Mode'}
+          </button>
         </div>
       </div>
 
@@ -493,42 +517,43 @@ function TimerPage({ quickStartSubjectId, onQuickStartConsumed }: { quickStartSu
             {!sessionGoal && <div className="small">Set an intention before starting.</div>}
           </div>
           <div className="flex gap-2">
-            {!running ? (
+            {!hasActiveInterval ? (
               <button className="button primary" onClick={requestStart}><Play size={16} /> Start</button>
-            ) : (
+            ) : running ? (
               <button className="button" onClick={() => setRunning(false)}><Pause size={16} /> Pause</button>
+            ) : (
+              <button className="button primary" onClick={() => setRunning(true)}><Play size={16} /> Resume</button>
             )}
-            <button className="button" onClick={() => setRunning(true)} disabled={running}><Play size={16} /> Resume</button>
-            <button className="button" onClick={() => finishInterval()}><SkipForward size={16} /> Skip</button>
-            <button className="button danger" onClick={stop}><Square size={16} /> Stop</button>
+            {hasActiveInterval && <button className="button" onClick={() => void finishInterval()}><SkipForward size={16} /> Skip</button>}
+            {hasActiveInterval && <button className="button danger" onClick={stop}><Square size={16} /> Stop</button>}
           </div>
         </div>
         <div className="panel space-y-4">
           <div className="grid-auto">
             <Field label="Subject">
-              <select className="select" value={subjectId ?? ''} onChange={(e) => setSubjectId(Number(e.target.value))}>
+              <select className="select" value={subjectId ?? ''} disabled={hasActiveInterval} onChange={(e) => setSubjectId(Number(e.target.value))}>
                 {store.subjects.map((s) => <option key={s.id} value={s.id}>{s.icon} {s.name}</option>)}
               </select>
             </Field>
             <Field label="Mode">
-              <select className="select" value={mode} onChange={(e) => { setMode(e.target.value as SessionType); setPhase('focus'); }}>
+              <select className="select" value={mode} disabled={hasActiveInterval} onChange={(e) => { setMode(e.target.value as SessionType); setPhase('focus'); }}>
                 <option value="pomodoro">Pomodoro</option>
                 <option value="custom">Custom</option>
                 <option value="freeform">Freeform</option>
               </select>
             </Field>
-            <Field label="Custom focus minutes">
-              <input className="input" type="number" min={1} max={180} value={customMinutes} onChange={(e) => setCustomMinutes(Number(e.target.value))} />
-            </Field>
+            {mode === 'custom' && <Field label="Custom focus minutes">
+              <input className="input" type="number" min={1} max={180} value={customMinutes} disabled={hasActiveInterval} onChange={(e) => setCustomMinutes(Number(e.target.value))} />
+            </Field>}
             <Field label="Mood before">
-              <Rating value={moodBefore} setValue={setMoodBefore} />
+              <Rating value={moodBefore} setValue={setMoodBefore} disabled={hasActiveInterval} />
             </Field>
             <Field label="Energy before">
-              <Rating value={energyBefore} setValue={setEnergyBefore} />
+              <Rating value={energyBefore} setValue={setEnergyBefore} disabled={hasActiveInterval} />
             </Field>
           </div>
           <Field label="Today I want to...">
-            <textarea className="textarea" value={intention} onChange={(e) => setIntention(e.target.value)} placeholder="Write the single outcome this session should create." />
+            <textarea className="textarea" value={intention} disabled={hasActiveInterval} onChange={(e) => setIntention(e.target.value)} placeholder="Write the single outcome this session should create." />
           </Field>
           {phase !== 'focus' && <FlashcardsPage mini />}
         </div>
@@ -723,6 +748,11 @@ function SubjectsPage() {
     await store.refresh();
   }
 
+  async function deleteGoal(goal: Goal) {
+    await window.studyflow.run('DELETE FROM goals WHERE id=?', [goal.id]);
+    await store.refresh();
+  }
+
   if (store.subjects.length === 0) {
     return (
       <section className="page space-y-5">
@@ -759,8 +789,8 @@ function SubjectsPage() {
           </div>
           <div className="space-y-2">
             {store.subjects.map((s) => (
-              <div key={s.id} className={clsx('panel subject-row w-full', selected?.id === s.id && 'border-accent')}>
-                <button className="subject-select text-left" onClick={() => store.selectSubject(s.id)}>
+              <div key={s.id} className={clsx('panel subject-row w-full', selected?.id === s.id && 'subject-row-selected')}>
+                <button className="subject-select text-left" aria-pressed={selected?.id === s.id} onClick={() => store.selectSubject(s.id)}>
                   <span className="font-bold" style={{ color: s.color }}>{s.icon} {s.name}</span>
                 </button>
                 <div className="subject-actions">
@@ -788,6 +818,22 @@ function SubjectsPage() {
             </div>
             <FixedTaskList tasks={tasks} />
           </div>
+          <div className="panel space-y-3">
+            <h2 className="font-bold">Goals</h2>
+            <Field label="Goals for">
+              <select className="select" value={selected?.id ?? ''} onChange={(e) => store.selectSubject(Number(e.target.value))}>
+                {store.subjects.map((subject) => <option key={subject.id} value={subject.id}>{subject.icon} {subject.name}</option>)}
+              </select>
+            </Field>
+            <div className="grid grid-cols-[140px_1fr_auto] gap-2">
+              <select className="select" value={goalPeriod} onChange={(e) => setGoalPeriod(e.target.value as 'daily' | 'weekly')}>
+                <option value="daily">Daily</option><option value="weekly">Weekly</option>
+              </select>
+              <input className="input" type="number" min={1} value={goalMinutes} onChange={(e) => setGoalMinutes(Number(e.target.value))} />
+              <button className="button primary" onClick={addGoal}>Save Goal</button>
+            </div>
+            <FixedGoalProgress goals={store.goals.filter((g) => g.subject_id === selected?.id)} onDelete={deleteGoal} />
+          </div>
           <div className="panel">
             <h2 className="font-bold mb-3">Eisenhower Matrix</h2>
             <div className="grid grid-cols-2 gap-3">
@@ -796,17 +842,6 @@ function SubjectsPage() {
               <FixedMatrixCell title="Urgent + Not Important" tasks={tasks.filter((t) => t.priority === 'normal')} />
               <FixedMatrixCell title="Neither" tasks={tasks.filter((t) => t.priority === 'low')} />
             </div>
-          </div>
-          <div className="panel space-y-3">
-            <h2 className="font-bold">Goals</h2>
-            <div className="grid grid-cols-[140px_1fr_auto] gap-2">
-              <select className="select" value={goalPeriod} onChange={(e) => setGoalPeriod(e.target.value as 'daily' | 'weekly')}>
-                <option value="daily">Daily</option><option value="weekly">Weekly</option>
-              </select>
-              <input className="input" type="number" min={1} value={goalMinutes} onChange={(e) => setGoalMinutes(Number(e.target.value))} />
-              <button className="button primary" onClick={addGoal}>Save Goal</button>
-            </div>
-            <FixedGoalProgress goals={store.goals.filter((g) => g.subject_id === selected?.id)} />
           </div>
         </div>
       </div>
@@ -857,7 +892,7 @@ function AnalyticsPage() {
         </div>
       </div>
 
-      <div className="analytics-toolbar">
+      <div className="analytics-tab-strip">
         <div className="segmented analytics-tabs">
           {analyticsTabs.map((item) => (
             <button key={item.value} className={clsx(tab === item.value && 'active')} onClick={() => setTab(item.value)}>
@@ -1723,8 +1758,8 @@ function Modal({ title, children, onClose }: { title: string; children: React.Re
   return <SharedModal title={title} onClose={onClose}>{children}</SharedModal>;
 }
 
-function Rating({ value, setValue }: { value: number; setValue: (value: number) => void }) {
-  return <div className="flex gap-1">{[1, 2, 3, 4, 5].map((n) => <button key={n} className={clsx('button !min-h-8 !px-3', value === n && 'primary')} onClick={() => setValue(n)}>{n}</button>)}</div>;
+function Rating({ value, setValue, disabled = false }: { value: number; setValue: (value: number) => void; disabled?: boolean }) {
+  return <div><div className="rating-row">{[1, 2, 3, 4, 5].map((n) => <button key={n} type="button" aria-pressed={value === n} disabled={disabled} className={clsx('button rating-button', value === n && 'selected')} onClick={() => setValue(n)}>{n}</button>)}</div><div className="small mt-1">Selected: {value} / 5</div></div>;
 }
 
 function ProgressRing({ progress, color, label }: { progress: number; color: string; label: string }) {
@@ -1766,17 +1801,17 @@ function FixedSessionList({ sessions }: { sessions: Session[] }) {
   return <div className="space-y-2">{sessions.length === 0 && <EmptyState icon={Clock3} message="No sessions yet." />}{sessions.map((session) => { const s = subjects.find((x) => x.id === session.subject_id); return <div key={session.id} className="session-row"><div><div className="font-bold"><span style={{ color: s?.color }}>*</span> {s?.name || 'Unassigned'}</div><div className="small">{new Date(session.started_at).toLocaleString()} · mood {session.mood_after || '-'}/5</div></div><div className="font-bold">{formatDuration(session.duration_seconds || 0)}</div></div>; })}</div>;
 }
 
-function FixedGoalProgress({ goals }: { goals: Goal[] }) {
+function FixedGoalProgress({ goals, onDelete }: { goals: Goal[]; onDelete?: (goal: Goal) => void | Promise<void> }) {
   const { subjects } = useStudyStore();
   if (goals.length === 0) return <EmptyState icon={Trophy} message="No goals set." />;
-  return <div className="space-y-3">{goals.map((goal) => <FixedGoalRow key={goal.id} goal={goal} subject={subjects.find((s) => s.id === goal.subject_id)} />)}</div>;
+  return <div className="space-y-3">{goals.map((goal) => <FixedGoalRow key={goal.id} goal={goal} subject={subjects.find((s) => s.id === goal.subject_id)} onDelete={onDelete} />)}</div>;
 }
 
-function FixedGoalRow({ goal, subject }: { goal: Goal; subject?: Subject }) {
+function FixedGoalRow({ goal, subject, onDelete }: { goal: Goal; subject?: Subject; onDelete?: (goal: Goal) => void | Promise<void> }) {
   const [minutes, setMinutes] = useState(0);
-  useEffect(() => { totalMinutesForGoal(goal).then(setMinutes).catch(() => setMinutes(0)); }, [goal.id]);
+  useEffect(() => { totalMinutesForGoal(goal).then(setMinutes).catch(() => setMinutes(0)); }, [goal.id, goal.period, goal.subject_id]);
   const pct = Math.min(100, Math.round((minutes / goal.target_minutes) * 100));
-  return <div><div className="flex justify-between small mb-1"><span>{subject?.name || 'All'} · {goal.period}</span><span>{minutes}/{goal.target_minutes}m · {Math.max(0, goal.target_minutes - minutes)}m left</span></div><div className="progress-track"><div className="progress-fill" style={{ width: `${pct}%`, background: subject?.color || 'var(--accent)' }} /></div></div>;
+  return <div className="goal-progress-row"><div className="flex items-center justify-between gap-2 small mb-1"><span className="flex items-center gap-2">{subject?.name || 'All'} · {goal.period}{onDelete && <button className="icon-action danger-action" title="Delete goal" aria-label={`Delete ${subject?.name || 'all subjects'} ${goal.period} goal`} onClick={() => void onDelete(goal)}><Trash2 size={14} /></button>}</span><span>{minutes}/{goal.target_minutes}m · {Math.max(0, goal.target_minutes - minutes)}m left</span></div><div className="progress-track"><div className="progress-fill" style={{ width: `${pct}%`, background: subject?.color || 'var(--accent)' }} /></div></div>;
 }
 
 function FixedHeatmap({ sessions }: { sessions: Session[] }) {
