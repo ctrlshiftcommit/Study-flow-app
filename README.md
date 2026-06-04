@@ -16,7 +16,7 @@ The app is built with Electron, React, TypeScript, Tailwind CSS, Zustand, Rechar
 - Flashcards with SM-2 spaced repetition, review ratings, due-card tracking, and break-review support.
 - Markdown notes with editing tools, preview, search, subject linking, and Markdown/HTML export.
 - Focus Mode with fullscreen support and an optional Windows process blocker for distracting apps.
-- Optional Brave/Chromium browser extension that logs approved audible class playback into StudyFlow through a localhost-only bridge.
+- Browser Extension tab for pairing the Brave/Chromium companion, logging approved class playback, and setting distraction-site reminders.
 - Ambient sounds, bell alerts, desktop notifications, tray timer status, and tray actions for starting, pausing, resuming, and skipping intervals.
 - Achievement badges for milestones such as study streaks, completed hours, Pomodoros, cards reviewed, and goals reached.
 - Settings for timer lengths, sounds, theme, accent color, notifications, auto-launch, notes location, backups, import, export, and data reset.
@@ -29,7 +29,7 @@ StudyFlow is local-first by design:
 - Study sessions, subjects, tasks, flashcards, achievements, settings, and app data are stored in a local SQLite database.
 - Notes are saved as local Markdown files in the configured notes directory.
 - Backups are written to the configured local backup directory.
-- Browser class logging is opt-in and uses a pairing token against `http://127.0.0.1:17384`; approved URL rules and class sessions stay local.
+- Browser extension features are opt-in and use a pairing token against `http://127.0.0.1:17384`; approved URL rules, distraction reminder rules, and class sessions stay local.
 - No runtime data is uploaded by the app.
 
 ## Development Setup
@@ -76,35 +76,38 @@ dist-installer/StudyFlow Setup 1.0.0.exe
 
 The installer creates StudyFlow desktop and Start Menu shortcuts.
 
-## Browser Class Logging Extension
+## Browser Companion Extension
 
-StudyFlow includes an optional unpacked Manifest V3 browser extension in `browser-extension/`. It is intended for Brave and Chromium-based browsers and privately records study time when an approved class page is the active tab, playing video, and producing audible audio.
+StudyFlow includes an optional unpacked Manifest V3 browser extension in `browser-extension/`. It is intended for Brave and Chromium-based browsers and privately records study time when an approved class page is the active tab, playing video, and producing audible audio. It can also show reminder notifications when distracting sites pull you away from your plan.
 
 How it works:
 
 - The desktop app runs a localhost bridge at `http://127.0.0.1:17384` when browser class logging is enabled.
 - The extension stores the StudyFlow pairing token in browser-local extension storage.
-- Approved class URL patterns are managed in StudyFlow Settings, not in the extension.
+- Approved class URL patterns are managed in the StudyFlow Browser tab, not in the extension.
+- Distraction reminder patterns, reminder text, and cooldown are managed in the Browser Extension tab.
 - The extension sends `class-active`, `heartbeat`, `class-paused`, and `class-ended` events to the local desktop app.
 - StudyFlow creates browser-sourced sessions, or can merge browser metadata into an active manual session after confirmation.
 
 Set it up:
 
 1. Start StudyFlow.
-2. Open **Settings** and enable **Browser Class Logging**.
-3. Copy the pairing token shown in that settings panel.
+2. Open **Browser** in the sidebar and enable the extension bridge.
+3. Copy the pairing token shown in the Browser tab.
 4. Open `brave://extensions` or `chrome://extensions`.
 5. Enable **Developer mode**.
 6. Choose **Load unpacked** and select the repository's `browser-extension/` folder.
 7. Open the extension options page, paste the pairing token, and choose **Save and test connection**.
-8. Back in StudyFlow Settings, add approved class URL patterns such as `https://classes.example.com/*` and assign a subject when useful.
-9. Open an approved class URL, make sure the tab is active, play the video, and confirm the tab is audible.
+8. Back in StudyFlow, add approved class URL patterns such as `https://classes.example.com/*` and assign a subject when useful.
+9. Add distraction reminder patterns such as `https://www.youtube.com/*`, customize the reminder message, and set the cooldown.
+10. Open an approved class URL, make sure the tab is active, play the video, and confirm the tab is audible.
 
 Troubleshooting:
 
-- If the extension says the bridge is offline, make sure StudyFlow is open and browser class logging is enabled.
-- If the token is rejected, copy the current token again from StudyFlow Settings or rotate it and save the new value in the extension.
+- If the extension says the bridge is offline, make sure StudyFlow is open and the Browser Extension bridge is enabled.
+- If the token is rejected, copy the current token again from the Browser tab or rotate it and save the new value in the extension.
 - If time is not logged, confirm the URL matches an approved pattern and the video is both playing and audible in the active tab.
+- If reminders do not appear, reload the extension after updating it and confirm browser notifications are allowed.
 - If using Chrome instead of Brave, the setup flow is the same through `chrome://extensions`.
 
 ## Private GitHub Distribution

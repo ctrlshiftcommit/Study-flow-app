@@ -189,6 +189,14 @@ export function defaultSettings() {
     lastBackupAt: '',
     browserLoggingEnabled: false,
     browserPairingToken: randomBytes(18).toString('hex'),
-    browserClassRules: []
+    browserClassRules: [],
+    browserDistractionRemindersEnabled: true,
+    browserDistractionCooldownMinutes: 10,
+    browserDistractionMessage: 'This looks like distraction territory. Come back to your StudyFlow plan.',
+    browserDistractionRules: [
+      { id: randomBytes(8).toString('hex'), pattern: 'https://www.youtube.com/*', label: 'YouTube' },
+      { id: randomBytes(8).toString('hex'), pattern: 'https://www.instagram.com/*', label: 'Instagram' },
+      { id: randomBytes(8).toString('hex'), pattern: 'https://x.com/*', label: 'X / Twitter' }
+    ]
   };
 }

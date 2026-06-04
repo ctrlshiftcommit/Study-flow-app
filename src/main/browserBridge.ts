@@ -97,7 +97,15 @@ async function route(request: IncomingMessage, response: ServerResponse): Promis
     if (!hasValidToken(request)) return send(response, 401, { error: 'Invalid pairing token.' });
     const settings = settingsReader?.();
     if (!settings?.browserLoggingEnabled) return send(response, 403, { error: 'Browser class logging is disabled.' });
-    return send(response, 200, { patterns: settings.browserClassRules.map((rule) => rule.pattern).filter(Boolean) });
+    return send(response, 200, {
+      patterns: settings.browserClassRules.map((rule) => rule.pattern).filter(Boolean),
+      distractions: {
+        enabled: Boolean(settings.browserDistractionRemindersEnabled),
+        cooldownMinutes: Math.max(1, Number(settings.browserDistractionCooldownMinutes) || 10),
+        message: settings.browserDistractionMessage || 'This looks like distraction territory. Come back to your StudyFlow plan.',
+        rules: settings.browserDistractionRules.filter((rule) => rule.pattern.trim())
+      }
+    });
   }
   if (request.url !== '/events' || request.method !== 'POST') return send(response, 404, { error: 'Not found.' });
   try {

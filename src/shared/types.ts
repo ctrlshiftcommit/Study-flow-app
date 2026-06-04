@@ -14,6 +14,12 @@ export interface BrowserClassRule {
   subjectId: number | null;
 }
 
+export interface BrowserDistractionRule {
+  id: string;
+  pattern: string;
+  label: string;
+}
+
 export interface BrowserBridgeStatus {
   running: boolean;
   host: string;
@@ -162,6 +168,10 @@ export interface Settings {
   browserLoggingEnabled: boolean;
   browserPairingToken: string;
   browserClassRules: BrowserClassRule[];
+  browserDistractionRemindersEnabled: boolean;
+  browserDistractionCooldownMinutes: number;
+  browserDistractionMessage: string;
+  browserDistractionRules: BrowserDistractionRule[];
 }
 
 export interface DbRunResult {

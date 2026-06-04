@@ -9,6 +9,7 @@ import {
   Clock3,
   Copy,
   Flame,
+  Globe2,
   Home,
   ListChecks,
   Mail,
@@ -51,13 +52,13 @@ import { useStudyStore } from './store/useStudyStore';
 import { GoalModal } from './components/GoalModal';
 import { Modal as SharedModal } from './components/Modal';
 import { PageHeader } from './components/PageHeader';
-import type { BrowserBridgeStatus, BrowserClassRule, BrowserConflictEvent, ChecklistItem, Flashcard, FlashcardRating, Goal, Note, NoteSummary, Priority, Session, SessionType, Settings, Subject, Task, TimerCommand } from '@shared/types';
+import type { BrowserBridgeStatus, BrowserClassRule, BrowserConflictEvent, BrowserDistractionRule, ChecklistItem, Flashcard, FlashcardRating, Goal, Note, NoteSummary, Priority, Session, SessionType, Settings, Subject, Task, TimerCommand } from '@shared/types';
 import { calculateNextReview } from './utils/sm2';
 import { badges, calculateDailyStreak } from './utils/achievements';
 import { dateKey, dayMs, endOfDay, formatDuration, formatTimer, startOfDay, startOfWeek } from './utils/time';
 import { quotes } from './utils/quotes';
 
-type Page = 'dashboard' | 'timer' | 'subjects' | 'analytics' | 'flashcards' | 'notes' | 'settings';
+type Page = 'dashboard' | 'timer' | 'subjects' | 'analytics' | 'flashcards' | 'notes' | 'browser' | 'settings';
 type TimerPhase = 'focus' | 'shortBreak' | 'longBreak';
 type StatsPeriod = 'week' | 'month' | 'year' | 'lifetime';
 type AnalyticsTab = 'overview' | 'subjects' | 'time' | 'sessions';
@@ -69,6 +70,7 @@ const nav: { page: Page; label: string; icon: React.ElementType }[] = [
   { page: 'analytics', label: 'Analytics', icon: BarChart3 },
   { page: 'flashcards', label: 'Flashcards', icon: Brain },
   { page: 'notes', label: 'Notes', icon: NotebookPen },
+  { page: 'browser', label: 'Browser', icon: Globe2 },
   { page: 'settings', label: 'Settings', icon: SettingsIcon }
 ];
 
@@ -167,6 +169,8 @@ export default function App() {
         return <FlashcardsPage mini={false} />;
       case 'notes':
         return <NotesPage />;
+      case 'browser':
+        return <BrowserPage />;
       case 'settings':
         return <SettingsPage />;
     }
@@ -1643,12 +1647,14 @@ function NotesPage() {
   );
 }
 
-function SettingsPage() {
+function BrowserPage() {
   const store = useStudyStore();
   const [settings, setSettings] = useState<Settings>(store.settings!);
   const [savedFields, setSavedFields] = useState<Record<string, boolean>>({});
   const [bridgeStatus, setBridgeStatus] = useState<BrowserBridgeStatus | null>(null);
   const debounceRef = useRef<Record<string, number>>({});
+  const classRules = settings.browserClassRules || [];
+  const distractionRules = settings.browserDistractionRules || [];
 
   useEffect(() => {
     window.studyflow.getSettings().then((loaded) => {
@@ -1675,6 +1681,170 @@ function SettingsPage() {
     window.setTimeout(() => setSavedFields((prev) => ({ ...prev, [field]: false })), 1500);
   }
 
+  function debouncedPersist(field: string, next: Settings) {
+    setSettings(next);
+    window.clearTimeout(debounceRef.current[field]);
+    debounceRef.current[field] = window.setTimeout(() => {
+      void persist(field, next);
+    }, 400);
+  }
+
+  function addBrowserRule() {
+    void persist('browserClassRules', {
+      ...settings,
+      browserClassRules: [...classRules, { id: crypto.randomUUID(), pattern: '', subjectId: null }]
+    });
+  }
+
+  function updateBrowserRule(id: string, patch: Partial<BrowserClassRule>) {
+    debouncedPersist('browserClassRules', {
+      ...settings,
+      browserClassRules: classRules.map((rule) => rule.id === id ? { ...rule, ...patch } : rule)
+    });
+  }
+
+  function removeBrowserRule(id: string) {
+    void persist('browserClassRules', { ...settings, browserClassRules: classRules.filter((rule) => rule.id !== id) });
+  }
+
+  function addDistractionRule() {
+    void persist('browserDistractionRules', {
+      ...settings,
+      browserDistractionRules: [...distractionRules, { id: crypto.randomUUID(), pattern: '', label: '' }]
+    });
+  }
+
+  function updateDistractionRule(id: string, patch: Partial<BrowserDistractionRule>) {
+    debouncedPersist('browserDistractionRules', {
+      ...settings,
+      browserDistractionRules: distractionRules.map((rule) => rule.id === id ? { ...rule, ...patch } : rule)
+    });
+  }
+
+  function removeDistractionRule(id: string) {
+    void persist('browserDistractionRules', { ...settings, browserDistractionRules: distractionRules.filter((rule) => rule.id !== id) });
+  }
+
+  return (
+    <section className="page browser-page space-y-5">
+      <PageHeader
+        title="Browser Extension"
+        subtitle="Pair the extension, approve class sites, and nudge yourself away from distraction loops."
+        actions={<button className="button" onClick={() => void window.studyflow.notify('StudyFlow reminder', settings.browserDistractionMessage || 'Back to your StudyFlow plan.')}>Test Reminder</button>}
+      />
+      <div className="browser-status-grid">
+        <div className="panel browser-status-card">
+          <div className="small">Bridge</div>
+          <div className="metric mt-1">{bridgeStatus?.running ? 'Online' : 'Offline'}</div>
+          <div className="small mt-1">{bridgeStatus?.running ? `http://${bridgeStatus.host}:${bridgeStatus.port}` : 'Open StudyFlow and enable logging'}</div>
+        </div>
+        <div className="panel browser-status-card">
+          <div className="small">Class Logging</div>
+          <div className="metric mt-1">{settings.browserLoggingEnabled ? 'Enabled' : 'Off'}</div>
+          <Toggle label="Enable Brave/Chromium extension bridge" checked={settings.browserLoggingEnabled} saved={savedFields.browserLoggingEnabled} onChange={(v) => persist('browserLoggingEnabled', { ...settings, browserLoggingEnabled: v })} />
+        </div>
+        <div className="panel browser-status-card">
+          <div className="small">Distraction Reminders</div>
+          <div className="metric mt-1">{settings.browserDistractionRemindersEnabled ? 'Active' : 'Muted'}</div>
+          <Toggle label="Remind me on distracting sites" checked={settings.browserDistractionRemindersEnabled ?? true} saved={savedFields.browserDistractionRemindersEnabled} onChange={(v) => persist('browserDistractionRemindersEnabled', { ...settings, browserDistractionRemindersEnabled: v })} />
+        </div>
+      </div>
+
+      <div className="grid grid-cols-1 xl:grid-cols-[1fr_0.9fr] gap-4">
+        <SettingsPanel title="Pair Extension">
+          <Field label="Pairing token">
+            <div className="inline-control">
+              <input className="input" readOnly value={settings.browserPairingToken} />
+              <button className="button" onClick={async () => { await navigator.clipboard.writeText(settings.browserPairingToken); store.setToast('Pairing token copied'); }}><Copy size={15} /> Copy</button>
+              <button className="button" onClick={() => void persist('browserPairingToken', { ...settings, browserPairingToken: makePairingToken() })}>Rotate</button>
+            </div>
+          </Field>
+          <div className="browser-steps">
+            <div>Open <strong>brave://extensions</strong> or <strong>chrome://extensions</strong>.</div>
+            <div>Enable Developer mode and load the unpacked <strong>browser-extension</strong> folder.</div>
+            <div>Open extension options, paste the token, then save and test.</div>
+          </div>
+        </SettingsPanel>
+
+        <SettingsPanel title="Reminder Behavior">
+          <NumberSetting label="Reminder cooldown minutes" value={settings.browserDistractionCooldownMinutes || 10} saved={savedFields.browserDistractionCooldownMinutes} onChange={(v) => persist('browserDistractionCooldownMinutes', { ...settings, browserDistractionCooldownMinutes: Math.max(1, v) })} />
+          <Field label="Reminder message">
+            <textarea
+              className="textarea"
+              rows={3}
+              value={settings.browserDistractionMessage || ''}
+              onChange={(e) => debouncedPersist('browserDistractionMessage', { ...settings, browserDistractionMessage: e.currentTarget.value })}
+              placeholder="This looks like distraction territory. Come back to your StudyFlow plan."
+            />
+          </Field>
+          <SavedBadge show={savedFields.browserDistractionMessage} />
+        </SettingsPanel>
+      </div>
+
+      <SettingsPanel title="Approved Class URLs">
+        <div className="flex items-center justify-between gap-2">
+          <div className="small">Class sessions are logged only when the active tab matches one of these patterns, has playing video, and is audible.</div>
+          <button className="button" onClick={addBrowserRule}><Plus size={15} /> Add URL</button>
+        </div>
+        {classRules.length === 0 && <div className="browser-empty">Add a full URL or wildcard pattern, for example https://classes.example.com/*</div>}
+        <div className="space-y-2">
+          {classRules.map((rule) => (
+            <div className="browser-rule-row" key={rule.id}>
+              <input className="input" placeholder="https://classes.example.com/*" value={rule.pattern} onChange={(e) => updateBrowserRule(rule.id, { pattern: e.target.value })} />
+              <select className="select" value={rule.subjectId ?? ''} onChange={(e) => updateBrowserRule(rule.id, { subjectId: e.target.value ? Number(e.target.value) : null })}>
+                <option value="">Unassigned</option>
+                {store.subjects.map((subject) => <option key={subject.id} value={subject.id}>{subject.name}</option>)}
+              </select>
+              <button className="button danger icon-only" title="Remove URL rule" onClick={() => removeBrowserRule(rule.id)}><Trash2 size={15} /></button>
+            </div>
+          ))}
+        </div>
+      </SettingsPanel>
+
+      <SettingsPanel title="Distraction Reminder Sites">
+        <div className="flex items-center justify-between gap-2">
+          <div className="small">When the active tab matches one of these patterns, the extension shows your reminder after the cooldown.</div>
+          <button className="button" onClick={addDistractionRule}><Plus size={15} /> Add Site</button>
+        </div>
+        {distractionRules.length === 0 && <div className="browser-empty">Add distracting URL patterns such as https://www.youtube.com/* or https://reddit.com/*</div>}
+        <div className="space-y-2">
+          {distractionRules.map((rule) => (
+            <div className="browser-distraction-row" key={rule.id}>
+              <input className="input" placeholder="Label" value={rule.label} onChange={(e) => updateDistractionRule(rule.id, { label: e.target.value })} />
+              <input className="input" placeholder="https://www.youtube.com/*" value={rule.pattern} onChange={(e) => updateDistractionRule(rule.id, { pattern: e.target.value })} />
+              <button className="button danger icon-only" title="Remove reminder rule" onClick={() => removeDistractionRule(rule.id)}><Trash2 size={15} /></button>
+            </div>
+          ))}
+        </div>
+      </SettingsPanel>
+    </section>
+  );
+}
+
+function SettingsPage() {
+  const store = useStudyStore();
+  const [settings, setSettings] = useState<Settings>(store.settings!);
+  const [savedFields, setSavedFields] = useState<Record<string, boolean>>({});
+  const debounceRef = useRef<Record<string, number>>({});
+
+  useEffect(() => {
+    window.studyflow.getSettings().then((loaded) => {
+      setSettings(loaded);
+      useStudyStore.setState({ settings: loaded });
+    }).catch(() => {
+      if (store.settings) setSettings(store.settings);
+    });
+  }, []);
+
+  async function persist(field: string, next: Settings) {
+    setSettings(next);
+    const saved = await window.studyflow.saveSettings(next);
+    setSettings(saved);
+    useStudyStore.setState({ settings: saved });
+    setSavedFields((prev) => ({ ...prev, [field]: true }));
+    window.setTimeout(() => setSavedFields((prev) => ({ ...prev, [field]: false })), 1500);
+  }
+
   function updateLocal(next: Settings) {
     setSettings(next);
   }
@@ -1685,24 +1855,6 @@ function SettingsPage() {
     debounceRef.current[field] = window.setTimeout(() => {
       void persist(field, next);
     }, 400);
-  }
-
-  function addBrowserRule() {
-    void persist('browserClassRules', {
-      ...settings,
-      browserClassRules: [...settings.browserClassRules, { id: crypto.randomUUID(), pattern: '', subjectId: null }]
-    });
-  }
-
-  function updateBrowserRule(id: string, patch: Partial<BrowserClassRule>) {
-    debouncedPersist('browserClassRules', {
-      ...settings,
-      browserClassRules: settings.browserClassRules.map((rule) => rule.id === id ? { ...rule, ...patch } : rule)
-    });
-  }
-
-  function removeBrowserRule(id: string) {
-    void persist('browserClassRules', { ...settings, browserClassRules: settings.browserClassRules.filter((rule) => rule.id !== id) });
   }
 
   async function clearData() {
@@ -1773,35 +1925,6 @@ function SettingsPage() {
             <button className="button" onClick={async () => store.setToast((await window.studyflow.exportJson()) || 'Export cancelled')}>Export JSON</button>
             <button className="button" onClick={async () => { await window.studyflow.importJson('merge'); await store.refresh(); }}>Import JSON</button>
             <button className="button danger" onClick={clearData}>Clear all data</button>
-          </div>
-        </SettingsPanel>
-        <SettingsPanel title="Browser Class Logging">
-          <Toggle label="Enable private Brave/Chromium class logging" checked={settings.browserLoggingEnabled} saved={savedFields.browserLoggingEnabled} onChange={(v) => persist('browserLoggingEnabled', { ...settings, browserLoggingEnabled: v })} />
-          <div className="small">Bridge: {bridgeStatus?.running ? `online at http://${bridgeStatus.host}:${bridgeStatus.port}` : 'offline'} · localhost only</div>
-          <Field label="Pairing token">
-            <div className="inline-control">
-              <input className="input" readOnly value={settings.browserPairingToken} />
-              <button className="button" onClick={async () => { await navigator.clipboard.writeText(settings.browserPairingToken); store.setToast('Pairing token copied'); }}><Copy size={15} /> Copy</button>
-              <button className="button" onClick={() => void persist('browserPairingToken', { ...settings, browserPairingToken: makePairingToken() })}>Rotate</button>
-            </div>
-          </Field>
-          <div className="small">Load the unpacked <strong>browser-extension</strong> folder from <strong>brave://extensions</strong>, open its options page, and paste this token.</div>
-          <div className="space-y-2">
-            <div className="flex items-center justify-between gap-2">
-              <span className="label">Approved class URLs</span>
-              <button className="button" onClick={addBrowserRule}><Plus size={15} /> Add URL</button>
-            </div>
-            {settings.browserClassRules.length === 0 && <div className="small">Add a full URL or wildcard pattern, for example https://classes.example.com/*</div>}
-            {settings.browserClassRules.map((rule) => (
-              <div className="browser-rule-row" key={rule.id}>
-                <input className="input" placeholder="https://classes.example.com/*" value={rule.pattern} onChange={(e) => updateBrowserRule(rule.id, { pattern: e.target.value })} />
-                <select className="select" value={rule.subjectId ?? ''} onChange={(e) => updateBrowserRule(rule.id, { subjectId: e.target.value ? Number(e.target.value) : null })}>
-                  <option value="">Unassigned</option>
-                  {store.subjects.map((subject) => <option key={subject.id} value={subject.id}>{subject.name}</option>)}
-                </select>
-                <button className="button danger icon-only" title="Remove URL rule" onClick={() => removeBrowserRule(rule.id)}><Trash2 size={15} /></button>
-              </div>
-            ))}
           </div>
         </SettingsPanel>
         <SettingsPanel title="Feedback">

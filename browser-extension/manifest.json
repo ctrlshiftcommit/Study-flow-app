@@ -1,12 +1,15 @@
 {
   "manifest_version": 3,
-  "name": "StudyFlow Browser Class Logging",
+  "name": "StudyFlow Browser Companion",
   "version": "1.0.0",
-  "description": "Privately logs approved audible class playback to the local StudyFlow desktop app.",
-  "permissions": ["storage", "tabs"],
+  "description": "Privately logs approved class playback and reminds you when distracting sites pull you off plan.",
+  "permissions": ["storage", "tabs", "notifications"],
   "host_permissions": ["http://127.0.0.1:17384/*"],
   "background": {
     "service_worker": "background.js"
+  },
+  "icons": {
+    "128": "icon.png"
   },
   "content_scripts": [
     {
@@ -17,6 +20,6 @@
   ],
   "options_page": "options.html",
   "action": {
-    "default_title": "StudyFlow Browser Class Logging"
+    "default_title": "StudyFlow Browser Companion"
   }
 }

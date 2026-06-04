@@ -1,5 +1,6 @@
 const BRIDGE = 'http://127.0.0.1:17384';
 const videoByTab = new Map();
+const distractionLastShown = new Map();
 let currentActive = null;
 
 chrome.runtime.onMessage.addListener((message, sender) => {
@@ -22,7 +23,9 @@ async function evaluate(heartbeat = false) {
   const [tab] = await chrome.tabs.query({ active: true, lastFocusedWindow: true });
   const token = await getToken();
   if (!token || !tab?.id || !tab.url) return transition(null, token);
-  const approved = await isApproved(tab.url, token);
+  const rules = await getRules(token);
+  const approved = rules.patterns.some((pattern) => matches(tab.url, pattern));
+  await maybeShowDistractionReminder(tab, rules.distractions);
   const isActive = approved && tab.audible === true && videoByTab.get(tab.id) === true;
   if (!isActive) return transition(null, token);
   const next = { tabId: tab.id, url: tab.url, title: tab.title || '' };
@@ -41,15 +44,32 @@ async function transition(next, token) {
   if (token) await postEvent('class-paused', previous, token);
 }
 
-async function isApproved(url, token) {
+async function getRules(token) {
   try {
     const response = await fetch(`${BRIDGE}/rules`, { headers: { 'X-StudyFlow-Token': token } });
-    if (!response.ok) return false;
-    const { patterns = [] } = await response.json();
-    return patterns.some((pattern) => matches(url, pattern));
+    if (!response.ok) return { patterns: [], distractions: null };
+    const { patterns = [], distractions = null } = await response.json();
+    return { patterns, distractions };
   } catch {
-    return false;
+    return { patterns: [], distractions: null };
   }
+}
+
+async function maybeShowDistractionReminder(tab, distractions) {
+  if (!distractions?.enabled || !tab.url) return;
+  const rule = (distractions.rules || []).find((item) => matches(tab.url, item.pattern));
+  if (!rule) return;
+  const cooldownMs = Math.max(1, Number(distractions.cooldownMinutes) || 10) * 60 * 1000;
+  const key = rule.pattern || tab.url;
+  const lastShownAt = distractionLastShown.get(key) || 0;
+  if (Date.now() - lastShownAt < cooldownMs) return;
+  distractionLastShown.set(key, Date.now());
+  await chrome.notifications.create(`studyflow-distraction-${Date.now()}`, {
+    type: 'basic',
+    iconUrl: 'icon.png',
+    title: rule.label ? `StudyFlow: ${rule.label}` : 'StudyFlow reminder',
+    message: distractions.message || 'This looks like distraction territory. Come back to your StudyFlow plan.'
+  }).catch(() => undefined);
 }
 
 function matches(url, pattern) {
