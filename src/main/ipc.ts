@@ -116,7 +116,9 @@ export function readSettings(): Settings {
       return [row.key, row.value];
     }
   }));
-  return normalizeSettings(withDefaultDirs({ ...defaults, ...values }), defaults);
+  const normalized = normalizeSettings(withDefaultDirs({ ...defaults, ...values }), defaults);
+  persistNormalizedBrowserSettings(db, values, normalized);
+  return normalized;
 }
 
 export function saveSettings(settings: Settings): Settings {
@@ -152,6 +154,15 @@ function normalizeSettings(settings: Settings, defaults: Settings): Settings {
     browserDistractionCooldownMinutes: settings.browserDistractionCooldownMinutes || defaults.browserDistractionCooldownMinutes,
     browserDistractionMessage: settings.browserDistractionMessage || defaults.browserDistractionMessage
   };
+}
+
+function persistNormalizedBrowserSettings(db: ReturnType<typeof getDb>, values: Record<string, unknown>, normalized: Settings): void {
+  const stmt = db.prepare('INSERT INTO settings(key,value) VALUES (?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value');
+  for (const key of ['browserClassRules', 'browserDistractionRules'] as const) {
+    if (JSON.stringify(values[key] || []) !== JSON.stringify(normalized[key])) {
+      stmt.run(key, JSON.stringify(normalized[key]));
+    }
+  }
 }
 
 function normalizeClassRules(rules: Settings['browserClassRules']): Settings['browserClassRules'] {
