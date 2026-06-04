@@ -70,8 +70,8 @@ const nav: { page: Page; label: string; icon: React.ElementType }[] = [
   { page: 'analytics', label: 'Analytics', icon: BarChart3 },
   { page: 'flashcards', label: 'Flashcards', icon: Brain },
   { page: 'notes', label: 'Notes', icon: NotebookPen },
-  { page: 'browser', label: 'Browser', icon: Globe2 },
-  { page: 'settings', label: 'Settings', icon: SettingsIcon }
+  { page: 'settings', label: 'Settings', icon: SettingsIcon },
+  { page: 'browser', label: 'Browser Link', icon: Globe2 }
 ];
 
 const soundUrls: Record<string, string | null> = {
@@ -1655,6 +1655,10 @@ function BrowserPage() {
   const debounceRef = useRef<Record<string, number>>({});
   const classRules = settings.browserClassRules || [];
   const distractionRules = settings.browserDistractionRules || [];
+  const browserSessions = store.sessions.filter((session) => session.source === 'browser' || session.source === 'manual_browser');
+  const browserSeconds = browserSessions.reduce((sum, session) => sum + (session.duration_seconds || 0), 0);
+  const browserTodaySeconds = browserSessions.filter((session) => session.started_at >= startOfDay()).reduce((sum, session) => sum + (session.duration_seconds || 0), 0);
+  const latestBrowserSession = browserSessions[0];
 
   useEffect(() => {
     window.studyflow.getSettings().then((loaded) => {
@@ -1728,9 +1732,14 @@ function BrowserPage() {
   return (
     <section className="page browser-page space-y-5">
       <PageHeader
-        title="Browser Extension"
-        subtitle="Pair the extension, approve class sites, and nudge yourself away from distraction loops."
-        actions={<button className="button" onClick={() => void window.studyflow.notify('StudyFlow reminder', settings.browserDistractionMessage || 'Back to your StudyFlow plan.')}>Test Reminder</button>}
+        title="Browser Link"
+        subtitle="Pair the extension, approve class sites, review logged browser study sessions, and nudge yourself away from distraction loops."
+        actions={(
+          <>
+            <button className="button" onClick={() => void store.refresh()}>Refresh History</button>
+            <button className="button" onClick={() => void window.studyflow.notify('StudyFlow reminder', settings.browserDistractionMessage || 'Back to your StudyFlow plan.')}>Test Reminder</button>
+          </>
+        )}
       />
       <div className="browser-status-grid">
         <div className="panel browser-status-card">
@@ -1749,6 +1758,40 @@ function BrowserPage() {
           <Toggle label="Remind me on distracting sites" checked={settings.browserDistractionRemindersEnabled ?? true} saved={savedFields.browserDistractionRemindersEnabled} onChange={(v) => persist('browserDistractionRemindersEnabled', { ...settings, browserDistractionRemindersEnabled: v })} />
         </div>
       </div>
+
+      <div className="browser-status-grid">
+        <Metric icon={Clock3} label="Browser sessions" value={String(browserSessions.length)} />
+        <Metric icon={BarChart3} label="Browser study time" value={formatDuration(browserSeconds)} />
+        <Metric icon={Flame} label="Today from browser" value={formatDuration(browserTodaySeconds)} />
+      </div>
+
+      <SettingsPanel title="Browser Study History">
+        {browserSessions.length === 0 && (
+          <div className="browser-empty">No browser study sessions have been logged yet. Approved class playback will appear here after the extension records it.</div>
+        )}
+        {browserSessions.length > 0 && (
+          <div className="browser-history-list">
+            {browserSessions.slice(0, 25).map((session) => {
+              const subject = store.subjects.find((item) => item.id === session.subject_id);
+              const started = new Date(session.started_at).toLocaleString();
+              const urlLabel = session.source_url ? browserHost(session.source_url) : 'No URL saved';
+              return (
+                <div className="browser-history-row" key={session.id}>
+                  <div className="browser-history-main">
+                    <div className="font-bold">{session.source_title || urlLabel}</div>
+                    <div className="small">{started} · {sessionSourceLabel(session)} · {subject?.name || 'Unassigned'}</div>
+                    {session.source_url && <div className="browser-url" title={session.source_url}>{session.source_url}</div>}
+                  </div>
+                  <div className="browser-history-meta">
+                    <strong>{formatDuration(session.duration_seconds || 0)}</strong>
+                    <span>{session.ended_at ? 'Saved' : latestBrowserSession?.id === session.id ? 'Recording' : 'Paused'}</span>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        )}
+      </SettingsPanel>
 
       <div className="grid grid-cols-1 xl:grid-cols-[1fr_0.9fr] gap-4">
         <SettingsPanel title="Pair Extension">
@@ -2227,6 +2270,14 @@ function sessionSourceLabel(session: Session) {
   if (session.source === 'browser') return 'browser class';
   if (session.source === 'manual_browser') return 'manual + browser class';
   return 'manual';
+}
+
+function browserHost(url: string) {
+  try {
+    return new URL(url).hostname.replace(/^www\./, '');
+  } catch {
+    return url;
+  }
 }
 
 function relativeTime(value: number | string) {

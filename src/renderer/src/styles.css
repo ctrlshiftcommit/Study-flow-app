@@ -535,6 +535,48 @@ button.panel:hover,
   gap: 8px;
   align-items: center;
 }
+
+.browser-history-list {
+  display: grid;
+  gap: 8px;
+}
+
+.browser-history-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 120px;
+  gap: 12px;
+  align-items: center;
+  border: 0.5px solid rgba(255, 255, 255, 0.12);
+  border-radius: 12px;
+  padding: 12px;
+  background: rgba(0, 0, 0, 0.12);
+}
+
+.browser-history-main {
+  min-width: 0;
+}
+
+.browser-url {
+  margin-top: 4px;
+  overflow: hidden;
+  color: rgba(255, 255, 255, 0.36);
+  font-size: 12px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.browser-history-meta {
+  display: grid;
+  justify-items: end;
+  gap: 4px;
+  color: rgba(255, 255, 255, 0.56);
+  font-size: 12px;
+}
+
+.browser-history-meta strong {
+  color: rgba(255, 255, 255, 0.9);
+  font-size: 14px;
+}
 .input:focus,
 .select:focus,
 .textarea:focus {
@@ -1232,8 +1274,10 @@ input[type="checkbox"] {
   }
   .notes-shell { grid-template-columns: 230px minmax(0, 1fr); }
   .browser-status-grid { grid-template-columns: 1fr; }
+  .browser-history-row,
   .browser-distraction-row,
   .browser-rule-row { grid-template-columns: minmax(0, 1fr); }
+  .browser-history-meta { justify-items: start; }
 }
 
 /* Universal button icon centering fix */
