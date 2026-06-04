@@ -340,8 +340,9 @@ function TimerPage({ quickStartSubjectId, onQuickStartConsumed }: { quickStartSu
 
   useEffect(() => {
     if (running) return;
+    if (hasActiveInterval) return;
     setRemaining(totalSeconds);
-  }, [mode, customMinutes, phase, store.settings?.pomodoroFocus, store.settings?.shortBreak, store.settings?.longBreak, running, totalSeconds]);
+  }, [mode, customMinutes, phase, store.settings?.pomodoroFocus, store.settings?.shortBreak, store.settings?.longBreak, running, hasActiveInterval, totalSeconds]);
 
   useEffect(() => {
     if (!running) return;
@@ -1761,12 +1762,12 @@ function BrowserPage() {
         <div className="panel browser-status-card">
           <div className="small">Bridge</div>
           <div className="metric mt-1">{bridgeStatus?.running ? 'Online' : 'Offline'}</div>
-          <div className="small mt-1">{bridgeStatus?.running ? `http://${bridgeStatus.host}:${bridgeStatus.port}` : 'Open StudyFlow and enable logging'}</div>
+          <div className="small mt-1">{bridgeStatus?.running ? `http://${bridgeStatus.host}:${bridgeStatus.port}` : 'Restart StudyFlow to start the local bridge'}</div>
         </div>
         <div className="panel browser-status-card">
           <div className="small">Class Logging</div>
           <div className="metric mt-1">{settings.browserLoggingEnabled ? 'Enabled' : 'Off'}</div>
-          <Toggle label="Enable Brave/Chromium extension bridge" checked={settings.browserLoggingEnabled} saved={savedFields.browserLoggingEnabled} onChange={(v) => persist('browserLoggingEnabled', { ...settings, browserLoggingEnabled: v })} />
+          <Toggle label="Log approved browser class sessions" checked={settings.browserLoggingEnabled} saved={savedFields.browserLoggingEnabled} onChange={(v) => persist('browserLoggingEnabled', { ...settings, browserLoggingEnabled: v })} />
         </div>
         <div className="panel browser-status-card">
           <div className="small">Distraction Reminders</div>
@@ -1821,7 +1822,7 @@ function BrowserPage() {
           <div className="browser-steps">
             <div>Open <strong>brave://extensions</strong> or <strong>chrome://extensions</strong>.</div>
             <div>Enable Developer mode and load the unpacked <strong>browser-extension</strong> folder.</div>
-            <div>Open extension options, paste the token, then save and test.</div>
+            <div>Click the extension from the puzzle menu, paste the token, then save and check.</div>
           </div>
         </SettingsPanel>
 
