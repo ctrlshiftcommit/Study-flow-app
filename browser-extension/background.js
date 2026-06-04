@@ -90,6 +90,7 @@ async function maybeShowDistractionReminder(tab, distractions, matchedRule) {
     title: rule.label ? `StudyFlow: ${rule.label}` : 'StudyFlow reminder',
     message: distractions.message || 'This looks like distraction territory. Come back to your StudyFlow plan.'
   }).catch(() => undefined);
+  await showInPageReminder(tab.id, rule.label ? `StudyFlow: ${rule.label}` : 'StudyFlow reminder', distractions.message || 'This looks like distraction territory. Come back to your StudyFlow plan.');
 }
 
 function matches(url, pattern) {
@@ -142,14 +143,24 @@ function handleSaveToken(token, sendResponse) {
 
 function handleTestReminder(sendResponse) {
   return trueWithResponse(async (sendResponse) => {
+    const [tab] = await chrome.tabs.query({ active: true, lastFocusedWindow: true });
     await chrome.notifications.create(`studyflow-test-${Date.now()}`, {
       type: 'basic',
       iconUrl: 'icon.png',
       title: 'StudyFlow reminder',
       message: 'Reminder notifications are working.'
     });
+    if (tab?.id) await showInPageReminder(tab.id, 'StudyFlow reminder', 'Reminder banner is working on this page.');
     sendResponse({ ok: true, connected: true, message: 'Test reminder sent' });
   }, sendResponse);
+}
+
+async function showInPageReminder(tabId, title, message) {
+  try {
+    await chrome.tabs.sendMessage(tabId, { type: 'show-studyflow-reminder', title, message });
+  } catch {
+    // Some browser pages do not allow content scripts.
+  }
 }
 
 function handleAddCurrentSite(ruleType, sendResponse) {
