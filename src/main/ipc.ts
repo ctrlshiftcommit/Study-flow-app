@@ -116,11 +116,12 @@ export function readSettings(): Settings {
       return [row.key, row.value];
     }
   }));
-  return withDefaultDirs({ ...defaults, ...values });
+  return normalizeSettings(withDefaultDirs({ ...defaults, ...values }), defaults);
 }
 
-function saveSettings(settings: Settings): Settings {
-  const merged = withDefaultDirs({ ...(defaultSettings() as Settings), ...settings });
+export function saveSettings(settings: Settings): Settings {
+  const defaults = defaultSettings() as Settings;
+  const merged = normalizeSettings(withDefaultDirs({ ...defaults, ...settings }), defaults);
   const db = getDb();
   const stmt = db.prepare('INSERT INTO settings(key,value) VALUES (?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value');
   const tx = db.transaction(() => {
@@ -130,7 +131,27 @@ function saveSettings(settings: Settings): Settings {
     }
   });
   tx();
+  runtimeSettings = merged;
   return merged;
+}
+
+function normalizeSettings(settings: Settings, defaults: Settings): Settings {
+  const existingDistractions = settings.browserDistractionRules || [];
+  const defaultDistractions = defaults.browserDistractionRules || [];
+  const browserDistractionRules = [...existingDistractions];
+  for (const rule of defaultDistractions) {
+    if (!browserDistractionRules.some((item) => item.pattern === rule.pattern)) {
+      browserDistractionRules.push(rule);
+    }
+  }
+  return {
+    ...settings,
+    browserClassRules: settings.browserClassRules || [],
+    browserDistractionRules,
+    browserDistractionRemindersEnabled: settings.browserDistractionRemindersEnabled ?? defaults.browserDistractionRemindersEnabled,
+    browserDistractionCooldownMinutes: settings.browserDistractionCooldownMinutes || defaults.browserDistractionCooldownMinutes,
+    browserDistractionMessage: settings.browserDistractionMessage || defaults.browserDistractionMessage
+  };
 }
 
 function setSetting(key: keyof Settings, value: unknown): Settings {

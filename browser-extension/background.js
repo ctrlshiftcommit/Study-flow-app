@@ -1,7 +1,7 @@
 const BRIDGE = 'http://127.0.0.1:17384';
 const videoByTab = new Map();
 const distractionLastShown = new Map();
-let lastStatus = { connected: false, message: 'Not checked yet', classApproved: false, distractionMatch: false };
+let lastStatus = { connected: false, message: 'Not checked yet', classApproved: false, classLoggingEnabled: false, distractionMatch: false };
 let currentActive = null;
 
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
@@ -13,6 +13,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (message?.type === 'popup-status') return handlePopupStatus(sendResponse);
   if (message?.type === 'save-token') return handleSaveToken(message.token, sendResponse);
   if (message?.type === 'test-reminder') return handleTestReminder(sendResponse);
+  if (message?.type === 'add-current-site') return handleAddCurrentSite(message.ruleType, sendResponse);
 });
 
 chrome.tabs.onActivated.addListener(() => void evaluate());
@@ -36,6 +37,7 @@ async function evaluate(heartbeat = false) {
     connected: rules.connected,
     message: rules.message,
     classApproved: approved,
+    classLoggingEnabled: Boolean(rules.classLoggingEnabled),
     distractionMatch: Boolean(distractionRule)
   };
   await maybeShowDistractionReminder(tab, rules.distractions, distractionRule);
@@ -60,11 +62,11 @@ async function transition(next, token) {
 async function getRules(token) {
   try {
     const response = await fetch(`${BRIDGE}/rules`, { headers: { 'X-StudyFlow-Token': token } });
-    if (!response.ok) return { connected: false, message: response.status === 401 ? 'Token rejected' : 'StudyFlow bridge rejected rules', patterns: [], distractions: null };
-    const { patterns = [], distractions = null } = await response.json();
-    return { connected: true, message: 'Connected to StudyFlow', patterns, distractions };
+    if (!response.ok) return { connected: false, message: response.status === 401 ? 'Token rejected' : 'StudyFlow bridge rejected rules', classLoggingEnabled: false, patterns: [], distractions: null };
+    const { classLoggingEnabled = false, patterns = [], distractions = null } = await response.json();
+    return { connected: true, message: 'Connected to StudyFlow', classLoggingEnabled, patterns, distractions };
   } catch {
-    return { connected: false, message: 'StudyFlow bridge is offline', patterns: [], distractions: null };
+    return { connected: false, message: 'StudyFlow bridge is offline', classLoggingEnabled: false, patterns: [], distractions: null };
   }
 }
 
@@ -120,7 +122,7 @@ function handlePopupStatus(sendResponse) {
     const token = await getToken();
     const [tab] = await chrome.tabs.query({ active: true, lastFocusedWindow: true });
     if (!token) {
-      sendResponse({ token, connected: false, message: 'Paste the StudyFlow pairing token', currentUrl: tab?.url || '', classApproved: false, distractionMatch: false });
+      sendResponse({ token, connected: false, message: 'Paste the StudyFlow pairing token', currentUrl: tab?.url || '', classApproved: false, classLoggingEnabled: false, distractionMatch: false });
       return;
     }
     if (tab?.url) await evaluate();
@@ -132,7 +134,7 @@ function handleSaveToken(token, sendResponse) {
   return trueWithResponse(async (sendResponse) => {
     const pairingToken = String(token || '').trim();
     await chrome.storage.local.set({ pairingToken });
-    lastStatus = { connected: false, message: 'Token saved. Checking...', classApproved: false, distractionMatch: false };
+    lastStatus = { connected: false, message: 'Token saved. Checking...', classApproved: false, classLoggingEnabled: false, distractionMatch: false };
     await evaluate();
     sendResponse({ token: pairingToken, ...lastStatus });
   }, sendResponse);
@@ -146,7 +148,34 @@ function handleTestReminder(sendResponse) {
       title: 'StudyFlow reminder',
       message: 'Reminder notifications are working.'
     });
-    sendResponse({ ok: true });
+    sendResponse({ ok: true, connected: true, message: 'Test reminder sent' });
+  }, sendResponse);
+}
+
+function handleAddCurrentSite(ruleType, sendResponse) {
+  return trueWithResponse(async (sendResponse) => {
+    const token = await getToken();
+    const [tab] = await chrome.tabs.query({ active: true, lastFocusedWindow: true });
+    if (!token) {
+      sendResponse({ connected: false, message: 'Paste the StudyFlow pairing token first' });
+      return;
+    }
+    if (!tab?.url || !/^https?:\/\//i.test(tab.url)) {
+      sendResponse({ connected: true, message: 'Open a normal website tab first' });
+      return;
+    }
+    const response = await fetch(`${BRIDGE}/rules`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'X-StudyFlow-Token': token },
+      body: JSON.stringify({ type: ruleType === 'distraction' ? 'distraction' : 'class', url: tab.url, title: tab.title || '' })
+    });
+    const payload = await response.json().catch(() => ({}));
+    if (!response.ok) {
+      sendResponse({ connected: false, message: payload.error || 'Could not save site in StudyFlow' });
+      return;
+    }
+    await evaluate();
+    sendResponse({ token, currentUrl: tab.url, ...lastStatus, ...payload });
   }, sendResponse);
 }
 

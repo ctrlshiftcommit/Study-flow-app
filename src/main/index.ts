@@ -4,7 +4,7 @@ import { join } from 'node:path';
 import { createTray } from './tray';
 import { registerIpc } from './ipc';
 import { runBackup } from './backup';
-import { readSettings } from './ipc';
+import { readSettings, saveSettings } from './ipc';
 import { startBrowserBridge, stopBrowserBridge } from './browserBridge';
 
 process.env.ELECTRON_DISABLE_SECURITY_WARNINGS = 'true';
@@ -107,7 +107,7 @@ function createWindow(): BrowserWindow {
   });
 
   registerIpc(win);
-  startBrowserBridge(win, readSettings);
+  startBrowserBridge(win, readSettings, saveSettings);
   createTray(win);
   scheduleBackups();
   return win;
