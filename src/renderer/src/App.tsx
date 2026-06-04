@@ -128,6 +128,12 @@ export default function App() {
   useEffect(() => window.studyflow.onBrowserConflict(setBrowserConflict), []);
 
   useEffect(() => {
+    return window.studyflow.onBrowserSessionsUpdated(() => {
+      store.refresh().catch((error) => store.setToast(String(error)));
+    });
+  }, []);
+
+  useEffect(() => {
     if (!store.settings) return;
     const root = document.documentElement;
     const media = matchMedia('(prefers-color-scheme: light)');

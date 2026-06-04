@@ -56,6 +56,11 @@ const api: StudyFlowApi = {
     const listener = (_event: IpcRendererEvent, event: Parameters<typeof callback>[0]) => callback(event);
     ipcRenderer.on('browser:merged', listener);
     return () => ipcRenderer.removeListener('browser:merged', listener);
+  },
+  onBrowserSessionsUpdated: (callback) => {
+    const listener = () => callback();
+    ipcRenderer.on('browser:sessions-updated', listener);
+    return () => ipcRenderer.removeListener('browser:sessions-updated', listener);
   }
 };
 

@@ -41,7 +41,7 @@ async function evaluate(heartbeat = false) {
     distractionMatch: Boolean(distractionRule)
   };
   await maybeShowDistractionReminder(tab, rules.distractions, distractionRule);
-  const isActive = approved && tab.audible === true && videoByTab.get(tab.id) === true;
+  const isActive = rules.classLoggingEnabled && approved && tab.audible === true && videoByTab.get(tab.id) === true;
   if (!isActive) return transition(null, token);
   const next = { tabId: tab.id, url: tab.url, title: tab.title || '' };
   if (!currentActive || currentActive.tabId !== next.tabId || currentActive.url !== next.url) {

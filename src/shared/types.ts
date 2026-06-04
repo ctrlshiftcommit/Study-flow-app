@@ -218,6 +218,7 @@ export interface StudyFlowApi {
   onTimerCommand(callback: (command: TimerCommand) => void): () => void;
   onBrowserConflict(callback: (event: BrowserConflictEvent) => void): () => void;
   onBrowserMerged(callback: (event: BrowserConflictEvent) => void): () => void;
+  onBrowserSessionsUpdated(callback: () => void): () => void;
 }
 
 declare global {

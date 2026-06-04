@@ -257,6 +257,7 @@ function persistBrowserSession(ended: boolean): void {
   const seconds = Math.max(0, Math.round((browserSession.accumulatedMs + activeMs) / 1000));
   getDb().prepare('UPDATE sessions SET ended_at=?, duration_seconds=? WHERE id=?')
     .run(ended ? Date.now() : null, seconds, browserSession.id);
+  mainWindow?.webContents.send('browser:sessions-updated');
 }
 
 function findMatchingRule(url: string, settings: Settings) {
