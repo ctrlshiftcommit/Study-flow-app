@@ -61,6 +61,11 @@ const api: StudyFlowApi = {
     const listener = () => callback();
     ipcRenderer.on('browser:sessions-updated', listener);
     return () => ipcRenderer.removeListener('browser:sessions-updated', listener);
+  },
+  onSettingsUpdated: (callback) => {
+    const listener = (_event: IpcRendererEvent, settings: Parameters<typeof callback>[0]) => callback(settings);
+    ipcRenderer.on('settings:updated', listener);
+    return () => ipcRenderer.removeListener('settings:updated', listener);
   }
 };
 

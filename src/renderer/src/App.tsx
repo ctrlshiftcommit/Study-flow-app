@@ -134,6 +134,12 @@ export default function App() {
   }, []);
 
   useEffect(() => {
+    return window.studyflow.onSettingsUpdated((settings) => {
+      useStudyStore.setState({ settings });
+    });
+  }, []);
+
+  useEffect(() => {
     if (!store.settings) return;
     const root = document.documentElement;
     const media = matchMedia('(prefers-color-scheme: light)');
@@ -1676,6 +1682,10 @@ function BrowserPage() {
   }, []);
 
   useEffect(() => {
+    if (store.settings) setSettings(store.settings);
+  }, [store.settings]);
+
+  useEffect(() => {
     const refreshStatus = () => window.studyflow.getBrowserBridgeStatus().then(setBridgeStatus).catch(() => setBridgeStatus(null));
     void refreshStatus();
     const id = window.setInterval(refreshStatus, 5000);
@@ -1884,6 +1894,10 @@ function SettingsPage() {
       if (store.settings) setSettings(store.settings);
     });
   }, []);
+
+  useEffect(() => {
+    if (store.settings) setSettings(store.settings);
+  }, [store.settings]);
 
   async function persist(field: string, next: Settings) {
     setSettings(next);

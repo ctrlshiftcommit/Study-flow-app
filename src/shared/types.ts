@@ -219,6 +219,7 @@ export interface StudyFlowApi {
   onBrowserConflict(callback: (event: BrowserConflictEvent) => void): () => void;
   onBrowserMerged(callback: (event: BrowserConflictEvent) => void): () => void;
   onBrowserSessionsUpdated(callback: () => void): () => void;
+  onSettingsUpdated(callback: (settings: Settings) => void): () => void;
 }
 
 declare global {
