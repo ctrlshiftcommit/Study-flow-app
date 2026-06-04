@@ -136,6 +136,7 @@ export default function App() {
   useEffect(() => {
     return window.studyflow.onSettingsUpdated((settings) => {
       useStudyStore.setState({ settings });
+      store.refresh().catch((error) => store.setToast(String(error)));
     });
   }, []);
 

@@ -145,21 +145,29 @@ async function route(request: IncomingMessage, response: ServerResponse): Promis
 }
 
 function addRuleFromBrowser(settings: Settings, payload: BrowserRulePayload): Settings {
-  const pattern = urlToWildcard(payload.url);
+  const patterns = urlToWildcards(payload.url);
   const label = titleToLabel(payload.title, payload.url);
   if (payload.type === 'class') {
-    const exists = settings.browserClassRules.some((rule) => matchesPattern(payload.url, rule.pattern) || rule.pattern === pattern);
+    const nextRules = [...settings.browserClassRules];
+    for (const pattern of patterns) {
+      const exists = nextRules.some((rule) => matchesPattern(payload.url, rule.pattern) || rule.pattern === pattern);
+      if (!exists) nextRules.push({ id: randomUUID(), pattern, subjectId: null });
+    }
     return {
       ...settings,
       browserLoggingEnabled: true,
-      browserClassRules: exists ? settings.browserClassRules : [...settings.browserClassRules, { id: randomUUID(), pattern, subjectId: null }]
+      browserClassRules: nextRules
     };
   }
-  const exists = settings.browserDistractionRules.some((rule) => matchesPattern(payload.url, rule.pattern) || rule.pattern === pattern);
+  const nextRules = [...settings.browserDistractionRules];
+  for (const pattern of patterns) {
+    const exists = nextRules.some((rule) => matchesPattern(payload.url, rule.pattern) || rule.pattern === pattern);
+    if (!exists) nextRules.push({ id: randomUUID(), pattern, label });
+  }
   return {
     ...settings,
     browserDistractionRemindersEnabled: true,
-    browserDistractionRules: exists ? settings.browserDistractionRules : [...settings.browserDistractionRules, { id: randomUUID(), pattern, label }]
+    browserDistractionRules: nextRules
   };
 }
 
@@ -172,13 +180,29 @@ function ruleStatusForUrl(url: string, settings: Settings) {
   };
 }
 
-function urlToWildcard(url: string): string {
+function urlToWildcards(url: string): string[] {
   try {
     const parsed = new URL(url);
-    return `${parsed.protocol}//${parsed.hostname}/*`;
+    const host = parsed.hostname.replace(/^www\./, '');
+    const baseDomain = baseDomainFor(host);
+    const patterns = new Set<string>([
+      `${parsed.protocol}//${host}/*`,
+      `${parsed.protocol}//*.${host}/*`
+    ]);
+    if (baseDomain !== host) {
+      patterns.add(`${parsed.protocol}//${baseDomain}/*`);
+      patterns.add(`${parsed.protocol}//*.${baseDomain}/*`);
+    }
+    return [...patterns];
   } catch {
-    return `${url.replace(/[#?].*$/, '').replace(/\/?$/, '')}*`;
+    return [`${url.replace(/[#?].*$/, '').replace(/\/?$/, '')}*`];
   }
+}
+
+function baseDomainFor(host: string): string {
+  const parts = host.split('.').filter(Boolean);
+  if (parts.length <= 2) return host;
+  return parts.slice(-2).join('.');
 }
 
 function titleToLabel(title = '', url = ''): string {
@@ -270,11 +294,10 @@ function matchesPattern(url: string, pattern: string): boolean {
   const candidates = new Set([url]);
   try {
     const parsed = new URL(url);
-    if (parsed.hostname.startsWith('www.')) {
-      parsed.hostname = parsed.hostname.slice(4);
-      candidates.add(parsed.toString());
-    } else {
-      parsed.hostname = `www.${parsed.hostname}`;
+    const host = parsed.hostname;
+    const baseDomain = baseDomainFor(host.replace(/^www\./, ''));
+    for (const candidateHost of new Set([host, host.replace(/^www\./, ''), `www.${host.replace(/^www\./, '')}`, baseDomain, `www.${baseDomain}`])) {
+      parsed.hostname = candidateHost;
       candidates.add(parsed.toString());
     }
   } catch {

@@ -19,7 +19,7 @@ document.querySelector('#test').addEventListener('click', async () => {
 });
 
 document.querySelector('#add-class').addEventListener('click', async () => {
-  setStatus({ connected: false, message: 'Adding class logging rule...' });
+  setStatus({ connected: false, message: 'Approving this whole site...' });
   const response = await chrome.runtime.sendMessage({ type: 'add-current-site', ruleType: 'class' });
   render(response);
 });

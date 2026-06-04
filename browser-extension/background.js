@@ -99,11 +99,10 @@ function matches(url, pattern) {
   const candidates = new Set([url]);
   try {
     const parsed = new URL(url);
-    if (parsed.hostname.startsWith('www.')) {
-      parsed.hostname = parsed.hostname.slice(4);
-      candidates.add(parsed.toString());
-    } else {
-      parsed.hostname = `www.${parsed.hostname}`;
+    const host = parsed.hostname;
+    const baseDomain = baseDomainFor(host.replace(/^www\./, ''));
+    for (const candidateHost of new Set([host, host.replace(/^www\./, ''), `www.${host.replace(/^www\./, '')}`, baseDomain, `www.${baseDomain}`])) {
+      parsed.hostname = candidateHost;
       candidates.add(parsed.toString());
     }
   } catch {
@@ -116,6 +115,12 @@ function matches(url, pattern) {
   } catch {
     return false;
   }
+}
+
+function baseDomainFor(host) {
+  const parts = host.split('.').filter(Boolean);
+  if (parts.length <= 2) return host;
+  return parts.slice(-2).join('.');
 }
 
 function handlePopupStatus(sendResponse) {
