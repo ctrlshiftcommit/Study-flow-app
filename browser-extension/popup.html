@@ -1,0 +1,48 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8">
+    <title>StudyFlow Browser Companion</title>
+    <link rel="stylesheet" href="popup.css">
+  </head>
+  <body>
+    <main>
+      <header>
+        <img src="icon.png" alt="">
+        <div>
+          <h1>StudyFlow</h1>
+          <p>Browser Companion</p>
+        </div>
+      </header>
+
+      <section class="status-card">
+        <div class="status-line">
+          <span id="dot" class="dot"></span>
+          <strong id="status">Checking...</strong>
+        </div>
+        <div id="current-tab" class="muted">Current tab unavailable</div>
+      </section>
+
+      <label for="token">Pairing token</label>
+      <textarea id="token" rows="3" autocomplete="off" spellcheck="false"></textarea>
+      <div class="actions">
+        <button id="save">Save and check</button>
+        <button id="test">Test reminder</button>
+      </div>
+
+      <section class="checks">
+        <div>
+          <span>Class logging</span>
+          <strong id="class-state">Unknown</strong>
+        </div>
+        <div>
+          <span>Reminder match</span>
+          <strong id="reminder-state">Unknown</strong>
+        </div>
+      </section>
+
+      <p class="note">Manage approved class URLs and reminder sites inside StudyFlow's Browser Extension tab.</p>
+    </main>
+    <script src="popup.js"></script>
+  </body>
+</html>

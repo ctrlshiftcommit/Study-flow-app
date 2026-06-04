@@ -96,9 +96,9 @@ async function route(request: IncomingMessage, response: ServerResponse): Promis
   if (request.url === '/rules' && request.method === 'GET') {
     if (!hasValidToken(request)) return send(response, 401, { error: 'Invalid pairing token.' });
     const settings = settingsReader?.();
-    if (!settings?.browserLoggingEnabled) return send(response, 403, { error: 'Browser class logging is disabled.' });
+    if (!settings) return send(response, 503, { error: 'StudyFlow settings are not ready.' });
     return send(response, 200, {
-      patterns: settings.browserClassRules.map((rule) => rule.pattern).filter(Boolean),
+      patterns: settings.browserLoggingEnabled ? settings.browserClassRules.map((rule) => rule.pattern).filter(Boolean) : [],
       distractions: {
         enabled: Boolean(settings.browserDistractionRemindersEnabled),
         cooldownMinutes: Math.max(1, Number(settings.browserDistractionCooldownMinutes) || 10),
@@ -193,10 +193,25 @@ function findMatchingRule(url: string, settings: Settings) {
 }
 
 function matchesPattern(url: string, pattern: string): boolean {
-  const escaped = pattern.trim().replace(/[.+?^${}()|[\]\\]/g, '\\$&').replaceAll('*', '.*');
-  if (!escaped) return false;
+  const raw = pattern.trim();
+  if (!raw) return false;
+  const candidates = new Set([url]);
   try {
-    return new RegExp(`^${escaped}$`, 'i').test(url);
+    const parsed = new URL(url);
+    if (parsed.hostname.startsWith('www.')) {
+      parsed.hostname = parsed.hostname.slice(4);
+      candidates.add(parsed.toString());
+    } else {
+      parsed.hostname = `www.${parsed.hostname}`;
+      candidates.add(parsed.toString());
+    }
+  } catch {
+    // Keep the original URL candidate.
+  }
+  const escaped = raw.replace(/[.+?^${}()|[\]\\]/g, '\\$&').replaceAll('*', '.*');
+  try {
+    const regex = new RegExp(`^${escaped}$`, 'i');
+    return [...candidates].some((candidate) => regex.test(candidate));
   } catch {
     return false;
   }

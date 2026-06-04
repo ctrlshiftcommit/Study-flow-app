@@ -20,6 +20,7 @@
   ],
   "options_page": "options.html",
   "action": {
-    "default_title": "StudyFlow Browser Companion"
+    "default_title": "StudyFlow Browser Companion",
+    "default_popup": "popup.html"
   }
 }

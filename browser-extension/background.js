@@ -1,12 +1,18 @@
 const BRIDGE = 'http://127.0.0.1:17384';
 const videoByTab = new Map();
 const distractionLastShown = new Map();
+let lastStatus = { connected: false, message: 'Not checked yet', classApproved: false, distractionMatch: false };
 let currentActive = null;
 
-chrome.runtime.onMessage.addListener((message, sender) => {
-  if (message?.type !== 'video-state' || !sender.tab?.id) return;
-  videoByTab.set(sender.tab.id, Boolean(message.playing));
-  void evaluate();
+chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+  if (message?.type === 'video-state' && sender.tab?.id) {
+    videoByTab.set(sender.tab.id, Boolean(message.playing));
+    void evaluate();
+    return;
+  }
+  if (message?.type === 'popup-status') return handlePopupStatus(sendResponse);
+  if (message?.type === 'save-token') return handleSaveToken(message.token, sendResponse);
+  if (message?.type === 'test-reminder') return handleTestReminder(sendResponse);
 });
 
 chrome.tabs.onActivated.addListener(() => void evaluate());
@@ -25,7 +31,14 @@ async function evaluate(heartbeat = false) {
   if (!token || !tab?.id || !tab.url) return transition(null, token);
   const rules = await getRules(token);
   const approved = rules.patterns.some((pattern) => matches(tab.url, pattern));
-  await maybeShowDistractionReminder(tab, rules.distractions);
+  const distractionRule = getDistractionRule(tab.url, rules.distractions);
+  lastStatus = {
+    connected: rules.connected,
+    message: rules.message,
+    classApproved: approved,
+    distractionMatch: Boolean(distractionRule)
+  };
+  await maybeShowDistractionReminder(tab, rules.distractions, distractionRule);
   const isActive = approved && tab.audible === true && videoByTab.get(tab.id) === true;
   if (!isActive) return transition(null, token);
   const next = { tabId: tab.id, url: tab.url, title: tab.title || '' };
@@ -47,17 +60,22 @@ async function transition(next, token) {
 async function getRules(token) {
   try {
     const response = await fetch(`${BRIDGE}/rules`, { headers: { 'X-StudyFlow-Token': token } });
-    if (!response.ok) return { patterns: [], distractions: null };
+    if (!response.ok) return { connected: false, message: response.status === 401 ? 'Token rejected' : 'StudyFlow bridge rejected rules', patterns: [], distractions: null };
     const { patterns = [], distractions = null } = await response.json();
-    return { patterns, distractions };
+    return { connected: true, message: 'Connected to StudyFlow', patterns, distractions };
   } catch {
-    return { patterns: [], distractions: null };
+    return { connected: false, message: 'StudyFlow bridge is offline', patterns: [], distractions: null };
   }
 }
 
-async function maybeShowDistractionReminder(tab, distractions) {
+function getDistractionRule(url, distractions) {
+  if (!distractions?.enabled || !url) return null;
+  return (distractions.rules || []).find((item) => matches(url, item.pattern)) || null;
+}
+
+async function maybeShowDistractionReminder(tab, distractions, matchedRule) {
   if (!distractions?.enabled || !tab.url) return;
-  const rule = (distractions.rules || []).find((item) => matches(tab.url, item.pattern));
+  const rule = matchedRule || getDistractionRule(tab.url, distractions);
   if (!rule) return;
   const cooldownMs = Math.max(1, Number(distractions.cooldownMinutes) || 10) * 60 * 1000;
   const key = rule.pattern || tab.url;
@@ -73,13 +91,68 @@ async function maybeShowDistractionReminder(tab, distractions) {
 }
 
 function matches(url, pattern) {
-  const escaped = String(pattern).trim().replace(/[.+?^${}()|[\]\\]/g, '\\$&').replaceAll('*', '.*');
-  if (!escaped) return false;
+  const raw = String(pattern).trim();
+  if (!raw) return false;
+  const candidates = new Set([url]);
   try {
-    return new RegExp(`^${escaped}$`, 'i').test(url);
+    const parsed = new URL(url);
+    if (parsed.hostname.startsWith('www.')) {
+      parsed.hostname = parsed.hostname.slice(4);
+      candidates.add(parsed.toString());
+    } else {
+      parsed.hostname = `www.${parsed.hostname}`;
+      candidates.add(parsed.toString());
+    }
+  } catch {
+    // Keep the original string candidate.
+  }
+  const escaped = raw.replace(/[.+?^${}()|[\]\\]/g, '\\$&').replaceAll('*', '.*');
+  try {
+    const regex = new RegExp(`^${escaped}$`, 'i');
+    return [...candidates].some((candidate) => regex.test(candidate));
   } catch {
     return false;
   }
+}
+
+function handlePopupStatus(sendResponse) {
+  return trueWithResponse(async (sendResponse) => {
+    const token = await getToken();
+    const [tab] = await chrome.tabs.query({ active: true, lastFocusedWindow: true });
+    if (!token) {
+      sendResponse({ token, connected: false, message: 'Paste the StudyFlow pairing token', currentUrl: tab?.url || '', classApproved: false, distractionMatch: false });
+      return;
+    }
+    if (tab?.url) await evaluate();
+    sendResponse({ token, currentUrl: tab?.url || '', ...lastStatus });
+  }, sendResponse);
+}
+
+function handleSaveToken(token, sendResponse) {
+  return trueWithResponse(async (sendResponse) => {
+    const pairingToken = String(token || '').trim();
+    await chrome.storage.local.set({ pairingToken });
+    lastStatus = { connected: false, message: 'Token saved. Checking...', classApproved: false, distractionMatch: false };
+    await evaluate();
+    sendResponse({ token: pairingToken, ...lastStatus });
+  }, sendResponse);
+}
+
+function handleTestReminder(sendResponse) {
+  return trueWithResponse(async (sendResponse) => {
+    await chrome.notifications.create(`studyflow-test-${Date.now()}`, {
+      type: 'basic',
+      iconUrl: 'icon.png',
+      title: 'StudyFlow reminder',
+      message: 'Reminder notifications are working.'
+    });
+    sendResponse({ ok: true });
+  }, sendResponse);
+}
+
+function trueWithResponse(work, sendResponse) {
+  work(sendResponse).catch((error) => sendResponse({ ok: false, message: String(error) }));
+  return true;
 }
 
 async function postEvent(type, tab, token) {

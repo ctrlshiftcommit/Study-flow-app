@@ -19,8 +19,8 @@ This unpacked Manifest V3 extension lets StudyFlow privately log approved online
 5. Open `brave://extensions` or `chrome://extensions`.
 6. Enable **Developer mode**.
 7. Choose **Load unpacked** and select this `browser-extension` folder.
-8. Open the extension options page.
-9. Paste the pairing token and choose **Save and test connection**.
+8. Click the StudyFlow extension from the browser's puzzle-piece menu.
+9. Paste the pairing token in the popup and choose **Save and check**.
 10. In StudyFlow, add approved class URL patterns such as `https://classes.example.com/*`.
 11. Add distraction reminder patterns such as `https://www.youtube.com/*`, then customize the reminder message and cooldown.
 
@@ -29,5 +29,6 @@ This unpacked Manifest V3 extension lets StudyFlow privately log approved online
 - Approved URL rules are managed inside StudyFlow.
 - Distraction reminder rules are managed inside StudyFlow.
 - The pairing token is stored in browser-local extension storage.
-- Rotating the token in StudyFlow requires saving the new token in the extension options page.
+- Rotating the token in StudyFlow requires saving the new token in the extension popup.
+- Reminder sites are not counted as study sessions unless they are also listed under approved class URLs in StudyFlow.
 - If the connection test fails, confirm StudyFlow is open, the bridge is enabled, and the bridge shows as online in the Browser page.

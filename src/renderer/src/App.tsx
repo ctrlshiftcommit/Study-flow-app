@@ -71,7 +71,7 @@ const nav: { page: Page; label: string; icon: React.ElementType }[] = [
   { page: 'flashcards', label: 'Flashcards', icon: Brain },
   { page: 'notes', label: 'Notes', icon: NotebookPen },
   { page: 'settings', label: 'Settings', icon: SettingsIcon },
-  { page: 'browser', label: 'Browser Link', icon: Globe2 }
+  { page: 'browser', label: 'Browser Extension', icon: Globe2 }
 ];
 
 const soundUrls: Record<string, string | null> = {
@@ -1732,7 +1732,7 @@ function BrowserPage() {
   return (
     <section className="page browser-page space-y-5">
       <PageHeader
-        title="Browser Link"
+        title="Browser Extension"
         subtitle="Pair the extension, approve class sites, review logged browser study sessions, and nudge yourself away from distraction loops."
         actions={(
           <>
