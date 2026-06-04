@@ -1847,11 +1847,11 @@ function BrowserPage() {
           <div className="small">Class sessions are logged only when the active tab matches one of these patterns, has playing video, and is audible.</div>
           <button className="button" onClick={addBrowserRule}><Plus size={15} /> Add URL</button>
         </div>
-        {classRules.length === 0 && <div className="browser-empty">Add a full URL or wildcard pattern, for example https://classes.example.com/*</div>}
+        {classRules.length === 0 && <div className="browser-empty">Add a site like pw.live, or use a wildcard pattern such as https://classes.example.com/*</div>}
         <div className="space-y-2">
           {classRules.map((rule) => (
             <div className="browser-rule-row" key={rule.id}>
-              <input className="input" placeholder="https://classes.example.com/*" value={rule.pattern} onChange={(e) => updateBrowserRule(rule.id, { pattern: e.target.value })} />
+              <input className="input" placeholder="pw.live" value={rule.pattern} onChange={(e) => updateBrowserRule(rule.id, { pattern: e.target.value })} />
               <select className="select" value={rule.subjectId ?? ''} onChange={(e) => updateBrowserRule(rule.id, { subjectId: e.target.value ? Number(e.target.value) : null })}>
                 <option value="">Unassigned</option>
                 {store.subjects.map((subject) => <option key={subject.id} value={subject.id}>{subject.name}</option>)}
@@ -1867,12 +1867,12 @@ function BrowserPage() {
           <div className="small">When the active tab matches one of these patterns, the extension shows your reminder after the cooldown.</div>
           <button className="button" onClick={addDistractionRule}><Plus size={15} /> Add Site</button>
         </div>
-        {distractionRules.length === 0 && <div className="browser-empty">Add distracting URL patterns such as https://www.youtube.com/* or https://reddit.com/*</div>}
+        {distractionRules.length === 0 && <div className="browser-empty">Add distracting sites such as youtube.com, instagram.com, or reddit.com</div>}
         <div className="space-y-2">
           {distractionRules.map((rule) => (
             <div className="browser-distraction-row" key={rule.id}>
               <input className="input" placeholder="Label" value={rule.label} onChange={(e) => updateDistractionRule(rule.id, { label: e.target.value })} />
-              <input className="input" placeholder="https://www.youtube.com/*" value={rule.pattern} onChange={(e) => updateDistractionRule(rule.id, { pattern: e.target.value })} />
+              <input className="input" placeholder="youtube.com" value={rule.pattern} onChange={(e) => updateDistractionRule(rule.id, { pattern: e.target.value })} />
               <button className="button danger icon-only" title="Remove reminder rule" onClick={() => removeDistractionRule(rule.id)}><Trash2 size={15} /></button>
             </div>
           ))}

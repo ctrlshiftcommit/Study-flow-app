@@ -4,6 +4,8 @@ const dot = document.querySelector('#dot');
 const currentTab = document.querySelector('#current-tab');
 const classState = document.querySelector('#class-state');
 const loggingState = document.querySelector('#logging-state');
+const recordingState = document.querySelector('#recording-state');
+const subjectState = document.querySelector('#subject-state');
 const reminderState = document.querySelector('#reminder-state');
 
 document.querySelector('#save').addEventListener('click', async () => {
@@ -40,6 +42,8 @@ function render(response = {}) {
   currentTab.textContent = response.currentUrl || 'Current tab unavailable';
   classState.textContent = response.classApproved ? 'Approved site' : 'Not in approved URLs';
   loggingState.textContent = response.classLoggingEnabled ? 'Enabled' : 'Off in StudyFlow';
+  recordingState.textContent = response.recording ? 'Recording now' : 'Paused / idle';
+  subjectState.textContent = response.classSubjectName || (response.classSubjectId ? `Subject #${response.classSubjectId}` : 'Unassigned');
   reminderState.textContent = response.distractionMatch ? 'Will remind' : 'No match';
 }
 

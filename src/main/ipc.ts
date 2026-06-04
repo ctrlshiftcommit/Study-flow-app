@@ -136,22 +136,79 @@ export function saveSettings(settings: Settings): Settings {
 }
 
 function normalizeSettings(settings: Settings, defaults: Settings): Settings {
-  const existingDistractions = settings.browserDistractionRules || [];
-  const defaultDistractions = defaults.browserDistractionRules || [];
+  const existingDistractions = normalizeDistractionRules(settings.browserDistractionRules || []);
+  const defaultDistractions = normalizeDistractionRules(defaults.browserDistractionRules || []);
   const browserDistractionRules = [...existingDistractions];
   for (const rule of defaultDistractions) {
-    if (!browserDistractionRules.some((item) => item.pattern === rule.pattern)) {
+    if (!browserDistractionRules.some((item) => browserPatternKey(item.pattern) === browserPatternKey(rule.pattern))) {
       browserDistractionRules.push(rule);
     }
   }
   return {
     ...settings,
-    browserClassRules: settings.browserClassRules || [],
+    browserClassRules: normalizeClassRules(settings.browserClassRules || []),
     browserDistractionRules,
     browserDistractionRemindersEnabled: settings.browserDistractionRemindersEnabled ?? defaults.browserDistractionRemindersEnabled,
     browserDistractionCooldownMinutes: settings.browserDistractionCooldownMinutes || defaults.browserDistractionCooldownMinutes,
     browserDistractionMessage: settings.browserDistractionMessage || defaults.browserDistractionMessage
   };
+}
+
+function normalizeClassRules(rules: Settings['browserClassRules']): Settings['browserClassRules'] {
+  const seen = new Set<string>();
+  const normalized: Settings['browserClassRules'] = [];
+  for (const rule of rules) {
+    const pattern = normalizeBrowserPattern(rule.pattern);
+    const key = browserPatternKey(pattern);
+    if (key && seen.has(key)) continue;
+    if (key) seen.add(key);
+    normalized.push({ ...rule, pattern });
+  }
+  return normalized;
+}
+
+function normalizeDistractionRules(rules: Settings['browserDistractionRules']): Settings['browserDistractionRules'] {
+  const seen = new Set<string>();
+  const normalized: Settings['browserDistractionRules'] = [];
+  for (const rule of rules) {
+    const pattern = normalizeBrowserPattern(rule.pattern);
+    const key = browserPatternKey(pattern);
+    if (key && seen.has(key)) continue;
+    if (key) seen.add(key);
+    normalized.push({ ...rule, pattern, label: rule.label || browserLabelFromPattern(pattern) });
+  }
+  return normalized;
+}
+
+function normalizeBrowserPattern(value: string): string {
+  let raw = String(value || '').trim().replace(/\\/g, '/');
+  if (!raw) return '';
+  raw = raw.replace(/^(https?):\/*(?!\/)/i, '$1://');
+  raw = raw.replace(/\/{2,}$/g, '/');
+  if (raw.includes('*')) return raw.replace(/^https:\/\/www\./i, 'https://').replace(/^http:\/\/www\./i, 'http://');
+  if (!/^[a-z][a-z\d+.-]*:\/\//i.test(raw)) raw = `https://${raw}`;
+  try {
+    const parsed = new URL(raw);
+    if (!/^https?:$/.test(parsed.protocol)) return value.trim();
+    const host = parsed.hostname.replace(/^www\./i, '').toLowerCase();
+    const path = parsed.pathname && parsed.pathname !== '/' ? parsed.pathname.replace(/\/+$/g, '') : '';
+    return `${parsed.protocol}//${host}${path || ''}/*`;
+  } catch {
+    return value.trim();
+  }
+}
+
+function browserPatternKey(pattern: string): string {
+  return pattern.trim().toLowerCase().replace(/^https?:\/\/www\./, 'https://').replace(/^http:\/\//, 'https://');
+}
+
+function browserLabelFromPattern(pattern: string): string {
+  try {
+    const parsed = new URL(pattern.replace('*', ''));
+    return parsed.hostname.replace(/^www\./, '') || 'Website';
+  } catch {
+    return 'Website';
+  }
 }
 
 function setSetting(key: keyof Settings, value: unknown): Settings {

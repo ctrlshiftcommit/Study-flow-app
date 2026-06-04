@@ -3,7 +3,7 @@ import { createServer, type IncomingMessage, type Server, type ServerResponse } 
 import type { AddressInfo } from 'node:net';
 import { randomUUID } from 'node:crypto';
 import { getDb } from './db';
-import type { BrowserBridgeStatus, BrowserClassEventType, BrowserConflictEvent, Settings } from '../shared/types';
+import type { BrowserBridgeStatus, BrowserClassEventType, BrowserConflictEvent, Settings, Subject } from '../shared/types';
 
 const HOST = '127.0.0.1';
 const PORT = 17384;
@@ -20,6 +20,11 @@ interface BrowserRulePayload {
   type: 'class' | 'distraction';
   url: string;
   title?: string;
+}
+
+interface BrowserSubjectPayload {
+  url: string;
+  subjectId: number | null;
 }
 
 interface BrowserSession {
@@ -109,7 +114,9 @@ async function route(request: IncomingMessage, response: ServerResponse): Promis
     if (!settings) return send(response, 503, { error: 'StudyFlow settings are not ready.' });
     return send(response, 200, {
       classLoggingEnabled: Boolean(settings.browserLoggingEnabled),
+      classRules: settings.browserClassRules.filter((rule) => rule.pattern.trim()),
       patterns: settings.browserClassRules.map((rule) => rule.pattern).filter(Boolean),
+      subjects: getSubjects(),
       distractions: {
         enabled: Boolean(settings.browserDistractionRemindersEnabled),
         cooldownMinutes: Math.max(1, Number(settings.browserDistractionCooldownMinutes) || 10),
@@ -128,6 +135,20 @@ async function route(request: IncomingMessage, response: ServerResponse): Promis
     const saved = settingsWriter(next);
     mainWindow?.webContents.send('settings:updated', saved);
     return send(response, 200, ruleStatusForUrl(payload.url, saved));
+  }
+  if (request.url === '/class-subject' && request.method === 'POST') {
+    if (!hasValidToken(request)) return send(response, 401, { error: 'Invalid pairing token.' });
+    if (!settingsWriter) return send(response, 503, { error: 'StudyFlow settings cannot be updated from the bridge.' });
+    const payload = await readJson(request) as BrowserSubjectPayload;
+    const settings = settingsReader?.();
+    if (!settings) return send(response, 503, { error: 'StudyFlow settings are not ready.' });
+    const next = setSubjectForBrowserRule(settings, payload);
+    const saved = settingsWriter(next);
+    updateActiveBrowserSubject(payload.url, payload.subjectId);
+    mainWindow?.webContents.send('settings:updated', saved);
+    mainWindow?.webContents.send('browser:sessions-updated');
+    const status = ruleStatusForUrl(payload.url, saved);
+    return send(response, 200, { ...status, subjects: getSubjects(), subjectId: status.classSubjectId });
   }
   if (request.url !== '/events' || request.method !== 'POST') return send(response, 404, { error: 'Not found.' });
   try {
@@ -171,18 +192,37 @@ function addRuleFromBrowser(settings: Settings, payload: BrowserRulePayload): Se
   };
 }
 
+function setSubjectForBrowserRule(settings: Settings, payload: BrowserSubjectPayload): Settings {
+  const subjectId = normalizeSubjectId(payload.subjectId);
+  return {
+    ...settings,
+    browserClassRules: settings.browserClassRules.map((rule) =>
+      matchesPattern(payload.url, rule.pattern) ? { ...rule, subjectId } : rule
+    )
+  };
+}
+
+function updateActiveBrowserSubject(url: string, subjectId: number | null): void {
+  if (!browserSession || !matchesSameBrowserUrl(browserSession.url, url)) return;
+  const cleanSubjectId = normalizeSubjectId(subjectId);
+  browserSession.subjectId = cleanSubjectId;
+  getDb().prepare('UPDATE sessions SET subject_id=? WHERE id=?').run(cleanSubjectId, browserSession.id);
+}
+
 function ruleStatusForUrl(url: string, settings: Settings) {
+  const matchedClassRule = findMatchingRule(url, settings);
   return {
     connected: true,
     message: 'Saved in StudyFlow',
-    classApproved: settings.browserLoggingEnabled && settings.browserClassRules.some((rule) => matchesPattern(url, rule.pattern)),
+    classApproved: Boolean(matchedClassRule),
+    classSubjectId: matchedClassRule?.subjectId ?? null,
     distractionMatch: settings.browserDistractionRemindersEnabled && settings.browserDistractionRules.some((rule) => matchesPattern(url, rule.pattern))
   };
 }
 
 function urlToWildcards(url: string): string[] {
   try {
-    const parsed = new URL(url);
+    const parsed = new URL(normalizeUrlForParsing(url));
     const host = parsed.hostname.replace(/^www\./, '');
     const baseDomain = baseDomainFor(host);
     const patterns = new Set<string>([
@@ -197,6 +237,13 @@ function urlToWildcards(url: string): string[] {
   } catch {
     return [`${url.replace(/[#?].*$/, '').replace(/\/?$/, '')}*`];
   }
+}
+
+function normalizeUrlForParsing(value: string): string {
+  let raw = String(value || '').trim().replace(/\\/g, '/');
+  if (/^https?:\/?(?!\/)/i.test(raw)) raw = raw.replace(/^(https?):\/*/i, '$1://');
+  if (!/^[a-z][a-z\d+.-]*:\/\//i.test(raw)) raw = `https://${raw}`;
+  return raw;
 }
 
 function baseDomainFor(host: string): string {
@@ -279,13 +326,35 @@ function persistBrowserSession(ended: boolean): void {
   if (!browserSession) return;
   const activeMs = browserSession.resumedAt ? Date.now() - browserSession.resumedAt : 0;
   const seconds = Math.max(0, Math.round((browserSession.accumulatedMs + activeMs) / 1000));
-  getDb().prepare('UPDATE sessions SET ended_at=?, duration_seconds=? WHERE id=?')
-    .run(ended ? Date.now() : null, seconds, browserSession.id);
+  getDb().prepare('UPDATE sessions SET subject_id=?, ended_at=?, duration_seconds=? WHERE id=?')
+    .run(browserSession.subjectId, ended ? Date.now() : null, seconds, browserSession.id);
   mainWindow?.webContents.send('browser:sessions-updated');
 }
 
 function findMatchingRule(url: string, settings: Settings) {
   return settings.browserClassRules.find((rule) => matchesPattern(url, rule.pattern));
+}
+
+function getSubjects(): Subject[] {
+  return getDb().prepare('SELECT id,name,color,icon,created_at FROM subjects ORDER BY created_at ASC, id ASC').all() as Subject[];
+}
+
+function normalizeSubjectId(subjectId: number | null | undefined): number | null {
+  if (subjectId === null || subjectId === undefined) return null;
+  const id = Number(subjectId);
+  if (!Number.isFinite(id)) return null;
+  const row = getDb().prepare('SELECT id FROM subjects WHERE id=?').get(id) as { id: number } | undefined;
+  return row ? id : null;
+}
+
+function matchesSameBrowserUrl(left: string, right: string): boolean {
+  try {
+    const first = new URL(left);
+    const second = new URL(right);
+    return first.hostname.replace(/^www\./, '') === second.hostname.replace(/^www\./, '') && first.pathname === second.pathname;
+  } catch {
+    return left === right;
+  }
 }
 
 function matchesPattern(url: string, pattern: string): boolean {
