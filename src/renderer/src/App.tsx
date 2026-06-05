@@ -55,7 +55,7 @@ import { PageHeader } from './components/PageHeader';
 import type { BrowserBridgeStatus, BrowserClassRule, BrowserConflictEvent, BrowserDistractionRule, ChecklistItem, Flashcard, FlashcardRating, Goal, Note, NoteSummary, Priority, Session, SessionType, Settings, Subject, Task, TimerCommand } from '@shared/types';
 import { calculateNextReview } from './utils/sm2';
 import { badges, calculateDailyStreak } from './utils/achievements';
-import { dateKey, dayMs, endOfDay, formatDuration, formatTimer, startOfDay, startOfWeek } from './utils/time';
+import { dateKey, dayMs, endOfDay, formatDate, formatDateTime, formatDuration, formatTimer, startOfDay, startOfWeek } from './utils/time';
 import { quotes } from './utils/quotes';
 
 type Page = 'dashboard' | 'timer' | 'subjects' | 'analytics' | 'flashcards' | 'notes' | 'browser' | 'settings';
@@ -1489,7 +1489,7 @@ function FlashcardsPage({ mini }: { mini: boolean }) {
           {cards.map((card) => (
             <div key={card.id} className="panel">
               <div className="font-bold">{card.front}</div>
-              <div className="small mt-2">Due {card.next_review ? new Date(card.next_review).toLocaleDateString() : 'now'} · interval {card.interval_days}d</div>
+              <div className="small mt-2">Due {card.next_review ? formatDate(card.next_review) : 'now'} · interval {card.interval_days}d</div>
               <div className="flex gap-2 mt-3">
                 <button className="button primary" onClick={() => setReview(card)}>Review</button>
                 <button className="button" onClick={async () => { await window.studyflow.run('UPDATE flashcards SET break_review=? WHERE id=?', [card.break_review ? 0 : 1, card.id]); await store.refresh(); }}>
@@ -1672,7 +1672,7 @@ function BrowserPage() {
   const browserSessions = store.sessions.filter((session) => session.source === 'browser' || session.source === 'manual_browser');
   const browserSeconds = browserSessions.reduce((sum, session) => sum + (session.duration_seconds || 0), 0);
   const browserTodaySeconds = browserSessions.filter((session) => session.started_at >= startOfDay()).reduce((sum, session) => sum + (session.duration_seconds || 0), 0);
-  const latestBrowserSession = browserSessions[0];
+  const activeBrowserSessionId = bridgeStatus?.recording ? bridgeStatus.activeSessionId : null;
 
   useEffect(() => {
     window.studyflow.getSettings().then((loaded) => {
@@ -1791,7 +1791,7 @@ function BrowserPage() {
           <div className="browser-history-list">
             {browserSessions.slice(0, 25).map((session) => {
               const subject = store.subjects.find((item) => item.id === session.subject_id);
-              const started = new Date(session.started_at).toLocaleString();
+              const started = formatDateTime(session.started_at);
               const urlLabel = session.source_url ? browserHost(session.source_url) : 'No URL saved';
               return (
                 <div className="browser-history-row" key={session.id}>
@@ -1802,7 +1802,7 @@ function BrowserPage() {
                   </div>
                   <div className="browser-history-meta">
                     <strong>{formatDuration(session.duration_seconds || 0)}</strong>
-                    <span>{session.ended_at ? 'Saved' : latestBrowserSession?.id === session.id ? 'Recording' : 'Paused'}</span>
+                    <span>{session.ended_at ? 'Saved' : activeBrowserSessionId === session.id ? 'Recording' : 'Paused'}</span>
                   </div>
                 </div>
               );
@@ -1953,7 +1953,7 @@ function SettingsPage() {
           </Field>
         </SettingsPanel>
         <SettingsPanel title="Backup">
-          <div className="small">Last backup: {settings.lastBackupAt ? new Date(settings.lastBackupAt).toLocaleString() : 'Never'}</div>
+          <div className="small">Last backup: {settings.lastBackupAt ? formatDateTime(settings.lastBackupAt) : 'Never'}</div>
           <Toggle label="Auto-backup enabled" checked={settings.autoBackupEnabled} saved={savedFields.autoBackupEnabled} onChange={(v) => persist('autoBackupEnabled', { ...settings, autoBackupEnabled: v })} />
           <button className="button" onClick={async () => { const result = await window.studyflow.runBackup(); await persist('lastBackupAt', { ...settings, lastBackupAt: result.completedAt }); store.setToast(result.message); }}>Back up now</button>
         </SettingsPanel>
@@ -2070,7 +2070,7 @@ function FixedMatrixCell({ title, tasks }: { title: string; tasks: Task[] }) {
 
 function FixedSessionList({ sessions }: { sessions: Session[] }) {
   const { subjects } = useStudyStore();
-  return <div className="space-y-2">{sessions.length === 0 && <EmptyState icon={Clock3} message="No sessions yet." />}{sessions.map((session) => { const s = subjects.find((x) => x.id === session.subject_id); return <div key={session.id} className="session-row"><div><div className="font-bold"><span style={{ color: s?.color }}>*</span> {s?.name || 'Unassigned'} <span className="small">{sessionSourceLabel(session)}</span></div><div className="small">{new Date(session.started_at).toLocaleString()} · mood {session.mood_after || '-'}/5</div></div><div className="font-bold">{formatDuration(session.duration_seconds || 0)}</div></div>; })}</div>;
+  return <div className="space-y-2">{sessions.length === 0 && <EmptyState icon={Clock3} message="No sessions yet." />}{sessions.map((session) => { const s = subjects.find((x) => x.id === session.subject_id); return <div key={session.id} className="session-row"><div><div className="font-bold"><span style={{ color: s?.color }}>*</span> {s?.name || 'Unassigned'} <span className="small">{sessionSourceLabel(session)}</span></div><div className="small">{formatDateTime(session.started_at)} · mood {session.mood_after || '-'}/5</div></div><div className="font-bold">{formatDuration(session.duration_seconds || 0)}</div></div>; })}</div>;
 }
 
 function FixedGoalProgress({ goals, onDelete }: { goals: Goal[]; onDelete?: (goal: Goal) => void | Promise<void> }) {
@@ -2197,7 +2197,7 @@ function MatrixCell({ title, tasks }: { title: string; tasks: Task[] }) {
 
 function SessionList({ sessions }: { sessions: Session[] }) {
   const { subjects } = useStudyStore();
-  return <div className="space-y-2">{sessions.length === 0 && <div className="small">No sessions yet.</div>}{sessions.map((session) => { const s = subjects.find((x) => x.id === session.subject_id); return <div key={session.id} className="flex items-center justify-between gap-3 border-b border-line/60 py-2"><div><div className="font-bold"><span style={{ color: s?.color }}>*</span> {s?.name || 'Unassigned'}</div><div className="small">{new Date(session.started_at).toLocaleString()} · mood {session.mood_after || '-'}/5</div></div><div className="font-bold">{formatDuration(session.duration_seconds || 0)}</div></div>; })}</div>;
+  return <div className="space-y-2">{sessions.length === 0 && <div className="small">No sessions yet.</div>}{sessions.map((session) => { const s = subjects.find((x) => x.id === session.subject_id); return <div key={session.id} className="flex items-center justify-between gap-3 border-b border-line/60 py-2"><div><div className="font-bold"><span style={{ color: s?.color }}>*</span> {s?.name || 'Unassigned'}</div><div className="small">{formatDateTime(session.started_at)} · mood {session.mood_after || '-'}/5</div></div><div className="font-bold">{formatDuration(session.duration_seconds || 0)}</div></div>; })}</div>;
 }
 
 function GoalProgress({ goals }: { goals: Goal[] }) {

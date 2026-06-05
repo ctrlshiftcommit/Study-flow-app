@@ -36,3 +36,18 @@ export function dateKey(timestamp: number): string {
   const d = new Date(timestamp);
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
 }
+
+export function formatDate(timestamp: number | string | Date): string {
+  const d = new Date(timestamp);
+  return `${String(d.getDate()).padStart(2, '0')}/${String(d.getMonth() + 1).padStart(2, '0')}/${d.getFullYear()}`;
+}
+
+export function formatDateTime(timestamp: number | string | Date): string {
+  const d = new Date(timestamp);
+  const hours = d.getHours();
+  const hour12 = hours % 12 || 12;
+  const minutes = String(d.getMinutes()).padStart(2, '0');
+  const seconds = String(d.getSeconds()).padStart(2, '0');
+  const suffix = hours >= 12 ? 'PM' : 'AM';
+  return `${formatDate(d)}, ${hour12}:${minutes}:${seconds} ${suffix}`;
+}

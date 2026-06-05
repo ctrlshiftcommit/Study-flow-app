@@ -6,7 +6,8 @@ export type FlashcardRating = 'again' | 'hard' | 'good' | 'easy';
 export type TimerCommand = 'start' | 'pause' | 'resume' | 'skip';
 export type TrayTimerState = 'idle' | 'running' | 'paused';
 export type SessionSource = 'manual' | 'browser' | 'manual_browser';
-export type BrowserClassEventType = 'class-active' | 'class-paused' | 'class-ended' | 'heartbeat';
+export type BrowserRecordingState = 'idle' | 'prompting' | 'recording' | 'grace-paused' | 'paused-expired' | 'declined';
+export type BrowserClassEventType = 'class-start' | 'class-heartbeat' | 'class-pause-grace' | 'class-ended';
 
 export interface BrowserClassRule {
   id: string;
@@ -26,6 +27,11 @@ export interface BrowserBridgeStatus {
   port: number;
   enabled: boolean;
   paired: boolean;
+  recording: boolean;
+  activeSessionId: number | null;
+  recordingState: BrowserRecordingState;
+  activeSubjectId: number | null;
+  activeUrl: string | null;
 }
 
 export interface BrowserConflictEvent {

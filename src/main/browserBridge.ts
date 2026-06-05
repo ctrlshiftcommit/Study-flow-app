@@ -3,7 +3,7 @@ import { createServer, type IncomingMessage, type Server, type ServerResponse } 
 import type { AddressInfo } from 'node:net';
 import { randomUUID } from 'node:crypto';
 import { getDb } from './db';
-import type { BrowserBridgeStatus, BrowserClassEventType, BrowserConflictEvent, Settings, Subject } from '../shared/types';
+import type { BrowserBridgeStatus, BrowserClassEventType, BrowserConflictEvent, BrowserRecordingState, Settings, Subject } from '../shared/types';
 
 const HOST = '127.0.0.1';
 const PORT = 17384;
@@ -14,6 +14,10 @@ interface BrowserEventPayload {
   url: string;
   title?: string;
   token?: string;
+  subjectId?: number | null;
+  mode?: 'new' | 'resume';
+  graceExpired?: boolean;
+  countedUntil?: number;
 }
 
 interface BrowserRulePayload {
@@ -35,6 +39,7 @@ interface BrowserSession {
   title: string;
   subjectId: number | null;
   lastHeartbeatAt: number;
+  recordingState: BrowserRecordingState;
 }
 
 let server: Server | null = null;
@@ -54,9 +59,10 @@ export function startBrowserBridge(win: BrowserWindow, readSettings: () => Setti
   settingsWriter = saveSettings || null;
   server = createServer((request, response) => void route(request, response));
   server.listen(PORT, HOST);
+  closeDanglingBrowserSessions();
   heartbeatTimer = setInterval(() => {
-    if (browserSession?.resumedAt && Date.now() - browserSession.lastHeartbeatAt > HEARTBEAT_TIMEOUT_MS) {
-      pauseBrowserSession();
+    if ((browserSession?.recordingState === 'recording' || browserSession?.recordingState === 'grace-paused') && Date.now() - browserSession.lastHeartbeatAt > HEARTBEAT_TIMEOUT_MS) {
+      finalizeBrowserSession();
     }
   }, 5_000);
 }
@@ -71,14 +77,21 @@ export function stopBrowserBridge(): void {
 }
 
 export function getBrowserBridgeStatus(): BrowserBridgeStatus {
+  if (!browserSession) closeDanglingBrowserSessions();
   const settings = settingsReader?.();
   const address = server?.address() as AddressInfo | null;
+  const recordingState = browserSession?.recordingState ?? 'idle';
   return {
     running: Boolean(server?.listening),
     host: HOST,
     port: address?.port || PORT,
     enabled: Boolean(settings?.browserLoggingEnabled),
-    paired: Boolean(settings?.browserPairingToken)
+    paired: Boolean(settings?.browserPairingToken),
+    recording: recordingState === 'recording' || recordingState === 'grace-paused',
+    activeSessionId: browserSession?.id ?? null,
+    recordingState,
+    activeSubjectId: browserSession?.subjectId ?? null,
+    activeUrl: browserSession?.url ?? null
   };
 }
 
@@ -209,6 +222,16 @@ function updateActiveBrowserSubject(url: string, subjectId: number | null): void
   getDb().prepare('UPDATE sessions SET subject_id=? WHERE id=?').run(cleanSubjectId, browserSession.id);
 }
 
+function saveBrowserRuleSubject(url: string, subjectId: number): void {
+  const settings = settingsReader?.();
+  if (!settingsWriter || !settings) return;
+  const next = setSubjectForBrowserRule(settings, { url, subjectId });
+  const changed = next.browserClassRules.some((rule, index) => rule.subjectId !== settings.browserClassRules[index]?.subjectId);
+  if (!changed) return;
+  const saved = settingsWriter(next);
+  mainWindow?.webContents.send('settings:updated', saved);
+}
+
 function ruleStatusForUrl(url: string, settings: Settings) {
   const matchedClassRule = findMatchingRule(url, settings);
   return {
@@ -262,7 +285,7 @@ function titleToLabel(title = '', url = ''): string {
   }
 }
 
-function handleBrowserEvent(payload: BrowserEventPayload, subjectId: number | null): void {
+function handleBrowserEvent(payload: BrowserEventPayload, matchedSubjectId: number | null): void {
   const event = { url: payload.url, title: String(payload.title || '') };
   if (manualActive) {
     finalizeBrowserSession();
@@ -273,21 +296,33 @@ function handleBrowserEvent(payload: BrowserEventPayload, subjectId: number | nu
     }
     return;
   }
+  if (payload.type === 'class-start') {
+    const subjectId = normalizeSubjectId(payload.subjectId) ?? normalizeSubjectId(matchedSubjectId);
+    if (!subjectId) throw new Error('A valid subject is required before browser class logging starts.');
+    saveBrowserRuleSubject(payload.url, subjectId);
+    startBrowserSession(event, subjectId, payload.mode === 'resume' ? 'resume' : 'new');
+    return;
+  }
+  if (payload.type === 'class-heartbeat') {
+    heartbeatBrowserSession(event);
+    return;
+  }
+  if (payload.type === 'class-pause-grace') {
+    if (payload.graceExpired) expireBrowserGrace(payload.countedUntil);
+    else markBrowserGrace(event);
+    return;
+  }
   if (payload.type === 'class-ended') {
     finalizeBrowserSession();
     return;
   }
-  if (payload.type === 'class-paused') {
-    pauseBrowserSession();
-    return;
-  }
-  resumeBrowserSession(event, subjectId);
 }
 
-function resumeBrowserSession(event: BrowserConflictEvent, subjectId: number | null): void {
+function startBrowserSession(event: BrowserConflictEvent, subjectId: number, mode: 'new' | 'resume'): void {
   const time = Date.now();
-  if (browserSession && browserSession.url !== event.url) finalizeBrowserSession();
-  if (!browserSession) {
+  if (browserSession && (browserSession.url !== event.url || mode === 'new')) finalizeBrowserSession();
+  if (!browserSession && mode === 'resume' && restoreLatestBrowserSession(event, subjectId, time)) return;
+  if (!browserSession || mode === 'new') {
     const info = getDb().prepare(
       `INSERT INTO sessions(subject_id,started_at,session_type,source,tags,source_url,source_title)
        VALUES (?,?,?,?,?,?,?)`
@@ -299,12 +334,65 @@ function resumeBrowserSession(event: BrowserConflictEvent, subjectId: number | n
       url: event.url,
       title: event.title,
       subjectId,
-      lastHeartbeatAt: time
+      lastHeartbeatAt: time,
+      recordingState: 'recording'
     };
+    persistBrowserSession(false);
     return;
   }
+  browserSession.subjectId = subjectId;
+  browserSession.title = event.title;
   browserSession.lastHeartbeatAt = time;
   if (!browserSession.resumedAt) browserSession.resumedAt = time;
+  browserSession.recordingState = 'recording';
+  persistBrowserSession(false);
+}
+
+function restoreLatestBrowserSession(event: BrowserConflictEvent, subjectId: number, time: number): boolean {
+  const row = getDb().prepare(
+    `SELECT id,duration_seconds,source_url,source_title
+     FROM sessions
+     WHERE source='browser' AND source_url=?
+     ORDER BY started_at DESC, id DESC
+     LIMIT 1`
+  ).get(event.url) as { id: number; duration_seconds?: number | null; source_url: string; source_title?: string | null } | undefined;
+  if (!row) return false;
+  browserSession = {
+    id: row.id,
+    accumulatedMs: Math.max(0, Number(row.duration_seconds) || 0) * 1000,
+    resumedAt: time,
+    url: row.source_url,
+    title: event.title || row.source_title || '',
+    subjectId,
+    lastHeartbeatAt: time,
+    recordingState: 'recording'
+  };
+  persistBrowserSession(false);
+  return true;
+}
+
+function heartbeatBrowserSession(event: BrowserConflictEvent): void {
+  if (!browserSession || !matchesSameBrowserUrl(browserSession.url, event.url)) return;
+  browserSession.lastHeartbeatAt = Date.now();
+  if (browserSession.recordingState !== 'paused-expired') persistBrowserSession(false);
+}
+
+function markBrowserGrace(event: BrowserConflictEvent): void {
+  if (!browserSession || !matchesSameBrowserUrl(browserSession.url, event.url)) return;
+  browserSession.lastHeartbeatAt = Date.now();
+  browserSession.recordingState = 'grace-paused';
+  persistBrowserSession(false);
+}
+
+function expireBrowserGrace(countedUntil?: number): void {
+  if (!browserSession || browserSession.recordingState === 'paused-expired') return;
+  if (browserSession.resumedAt) {
+    const until = Number.isFinite(Number(countedUntil)) ? Number(countedUntil) : Date.now();
+    browserSession.accumulatedMs += Math.max(0, until - browserSession.resumedAt);
+  }
+  browserSession.resumedAt = null;
+  browserSession.recordingState = 'paused-expired';
+  browserSession.lastHeartbeatAt = Date.now();
   persistBrowserSession(false);
 }
 
@@ -312,6 +400,7 @@ function pauseBrowserSession(): void {
   if (!browserSession?.resumedAt) return;
   browserSession.accumulatedMs += Date.now() - browserSession.resumedAt;
   browserSession.resumedAt = null;
+  browserSession.recordingState = 'paused-expired';
   persistBrowserSession(false);
 }
 
@@ -329,6 +418,17 @@ function persistBrowserSession(ended: boolean): void {
   getDb().prepare('UPDATE sessions SET subject_id=?, ended_at=?, duration_seconds=? WHERE id=?')
     .run(browserSession.subjectId, ended ? Date.now() : null, seconds, browserSession.id);
   mainWindow?.webContents.send('browser:sessions-updated');
+}
+
+function closeDanglingBrowserSessions(): void {
+  const info = getDb().prepare(
+    `UPDATE sessions
+     SET ended_at=started_at + (COALESCE(duration_seconds, 0) * 1000)
+     WHERE source='browser'
+       AND ended_at IS NULL
+       AND (? IS NULL OR id != ?)`
+  ).run(browserSession?.id ?? null, browserSession?.id ?? null);
+  if (info.changes > 0) mainWindow?.webContents.send('browser:sessions-updated');
 }
 
 function findMatchingRule(url: string, settings: Settings) {

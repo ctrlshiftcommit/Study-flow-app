@@ -42,7 +42,7 @@ function render(response = {}) {
   currentTab.textContent = response.currentUrl || 'Current tab unavailable';
   classState.textContent = response.classApproved ? 'Approved site' : 'Not in approved URLs';
   loggingState.textContent = response.classLoggingEnabled ? 'Enabled' : 'Off in StudyFlow';
-  recordingState.textContent = response.recording ? 'Recording now' : 'Paused / idle';
+  recordingState.textContent = recordingLabel(response.recordingState || (response.recording ? 'recording' : 'idle'));
   subjectState.textContent = response.classSubjectName || (response.classSubjectId ? `Subject #${response.classSubjectId}` : 'Unassigned');
   reminderState.textContent = response.distractionMatch ? 'Will remind' : 'No match';
 }
@@ -50,4 +50,10 @@ function render(response = {}) {
 function setStatus(response = {}) {
   statusText.textContent = response.message || (response.connected ? 'Connected' : 'Not connected');
   dot.classList.toggle('ok', Boolean(response.connected));
+}
+
+function recordingLabel(state) {
+  if (state === 'recording' || state === 'grace-paused') return 'Recording';
+  if (state === 'paused-expired') return 'Paused';
+  return 'Idle';
 }

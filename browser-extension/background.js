@@ -1,8 +1,12 @@
 const BRIDGE = 'http://127.0.0.1:17384';
+const GRACE_MS = 240_000;
+
 const videoByTab = new Map();
 const distractionLastShown = new Map();
-let lastStatus = { connected: false, message: 'Not checked yet', classApproved: false, classLoggingEnabled: false, distractionMatch: false, recording: false, classSubjectId: null, classSubjectName: '', subjects: [] };
-let currentActive = null;
+const declinedSiteKeys = new Set();
+
+let lastStatus = emptyStatus('Not checked yet');
+let classSession = null;
 
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (message?.type === 'video-state' && sender.tab?.id) {
@@ -10,11 +14,11 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     void evaluate();
     return;
   }
+  if (message?.type === 'class-consent-response') return handleClassConsent(message, sendResponse);
   if (message?.type === 'popup-status') return handlePopupStatus(sendResponse);
   if (message?.type === 'save-token') return handleSaveToken(message.token, sendResponse);
   if (message?.type === 'test-reminder') return handleTestReminder(sendResponse);
   if (message?.type === 'add-current-site') return handleAddCurrentSite(message.ruleType, sendResponse);
-  if (message?.type === 'set-class-subject') return handleSetClassSubject(message.subjectId, message.url, sendResponse);
 });
 
 chrome.tabs.onActivated.addListener(() => void evaluate());
@@ -23,6 +27,7 @@ chrome.tabs.onUpdated.addListener((_tabId, changeInfo) => {
 });
 chrome.tabs.onRemoved.addListener((tabId) => {
   videoByTab.delete(tabId);
+  if (classSession?.tabId === tabId) void endClassSession();
   void evaluate();
 });
 setInterval(() => void evaluate(true), 5000);
@@ -30,45 +35,292 @@ setInterval(() => void evaluate(true), 5000);
 async function evaluate(heartbeat = false) {
   const [tab] = await chrome.tabs.query({ active: true, lastFocusedWindow: true });
   const token = await getToken();
-  if (!token || !tab?.id || !tab.url) return transition(null, token);
+  if (!token || !tab?.id || !tab.url) {
+    lastStatus = emptyStatus(token ? 'Current tab unavailable' : 'Paste the StudyFlow pairing token');
+    return;
+  }
+
+  if (classSession && tab.id !== classSession.tabId && !classSession.sessionStarted) {
+    await hideClassPrompt(classSession.tabId);
+    classSession = null;
+  }
+
   const rules = await getRules(token);
+  const bridgeStatus = await getBridgeStatus(token);
+  if (!classSession && bridgeStatus.activeSessionId && bridgeStatus.activeUrl) {
+    const trackedTab = await findTabForUrl(bridgeStatus.activeUrl);
+    if (trackedTab?.id) {
+      classSession = {
+        tabId: trackedTab.id,
+        url: bridgeStatus.activeUrl,
+        title: trackedTab.title || '',
+        subjectId: bridgeStatus.activeSubjectId ?? null,
+        subjects: rules.subjects || [],
+        state: bridgeStatus.recordingState || 'paused-expired',
+        sessionStarted: true,
+        promptShown: false
+      };
+    }
+  }
   const matchedClassRule = getClassRule(tab.url, rules.classRules, rules.patterns);
   const approved = Boolean(matchedClassRule);
   const distractionRule = getDistractionRule(tab.url, rules.distractions);
-  const classSubjectId = matchedClassRule?.subjectId ?? null;
-  const classSubject = (rules.subjects || []).find((subject) => subject.id === classSubjectId);
-  lastStatus = {
+  const ruleSubjectId = matchedClassRule?.subjectId ?? null;
+  const activeSubjectId = classSession?.subjectId ?? bridgeStatus.activeSubjectId ?? ruleSubjectId;
+  const activeSubject = (rules.subjects || []).find((subject) => subject.id === activeSubjectId);
+
+  updateLastStatus({
     connected: rules.connected,
     message: rules.message,
+    currentUrl: tab.url,
     classApproved: approved,
     classLoggingEnabled: Boolean(rules.classLoggingEnabled),
     distractionMatch: Boolean(distractionRule),
-    recording: Boolean(currentActive),
-    classSubjectId,
-    classSubjectName: classSubject?.name || '',
+    recordingState: localRecordingState(bridgeStatus),
+    classSubjectId: activeSubjectId ?? null,
+    classSubjectName: activeSubject?.name || '',
     subjects: rules.subjects || []
-  };
+  });
+
   await maybeShowDistractionReminder(tab, rules.distractions, distractionRule);
-  const isActive = rules.classLoggingEnabled && approved && tab.audible === true && videoByTab.get(tab.id) === true;
-  if (!isActive) return transition(null, token);
-  const next = { tabId: tab.id, url: tab.url, title: tab.title || '' };
-  if (!currentActive || currentActive.tabId !== next.tabId || currentActive.url !== next.url) {
-    if (currentActive) await postEvent('class-ended', currentActive, token);
-    currentActive = next;
-    await postEvent('class-active', next, token);
-    await maybeShowSubjectPicker(tab, matchedClassRule, rules.subjects || []);
-    lastStatus = { ...lastStatus, recording: true };
+
+  if (classSession?.sessionStarted) {
+    await evaluateStartedSession(token, rules, bridgeStatus, heartbeat);
     return;
   }
-  if (heartbeat) return postEvent('heartbeat', next, token);
+
+  const sameClass = classSession && classSession.tabId === tab.id && classSession.url === tab.url;
+  if (!rules.classLoggingEnabled || !approved) {
+    if (sameClass && classSession.sessionStarted) await endClassSession();
+    if (sameClass) classSession = null;
+    updateLastStatus({ recordingState: bridgeStatus.recordingState || 'idle' });
+    return;
+  }
+
+  const playing = tab.audible === true && videoByTab.get(tab.id) === true;
+  const context = {
+    tabId: tab.id,
+    url: tab.url,
+    title: tab.title || '',
+    subjectId: ruleSubjectId,
+    subjects: rules.subjects || []
+  };
+
+  if (declinedSiteKeys.has(siteKey(tab.url))) {
+    if (!classSession || !sameClass) classSession = { ...context, state: 'declined', sessionStarted: false, promptShown: false };
+    updateLastStatus({ recordingState: 'declined' });
+    return;
+  }
+
+  if (!sameClass) {
+    if (classSession?.tabId) await hideClassPrompt(classSession.tabId);
+    classSession = null;
+  }
+
+  if (playing) {
+    if (!classSession) {
+      classSession = { ...context, state: 'prompting', sessionStarted: false, promptShown: true };
+      await showClassPrompt(tab, classSession, 'initial');
+      updateLastStatus({ recordingState: 'prompting' });
+      return;
+    }
+
+    if (classSession.state === 'recording') {
+      if (heartbeat) await postEvent('class-heartbeat', classSession, token);
+      updateLastStatus({ recordingState: 'recording' });
+      return;
+    }
+
+    if (classSession.state === 'grace-paused') {
+      classSession.state = 'recording';
+      classSession.pauseStartedAt = null;
+      await postEvent('class-heartbeat', classSession, token);
+      updateLastStatus({ recordingState: 'recording' });
+      return;
+    }
+
+    if (classSession.state === 'paused-expired') {
+      if (!classSession.promptShown) {
+        classSession.promptShown = true;
+        await showClassPrompt(tab, classSession, 'replay');
+      }
+      updateLastStatus({ recordingState: 'paused-expired' });
+      return;
+    }
+
+    if (classSession.state === 'idle') {
+      classSession.state = 'prompting';
+      classSession.promptShown = true;
+      await showClassPrompt(tab, classSession, 'initial');
+      updateLastStatus({ recordingState: 'prompting' });
+      return;
+    }
+  }
+
+  if (!classSession) {
+    updateLastStatus({ recordingState: bridgeStatus.recordingState || 'idle' });
+    return;
+  }
+
+  if (classSession.state === 'recording') {
+    classSession.state = 'grace-paused';
+    classSession.pauseStartedAt = Date.now();
+    await postEvent('class-pause-grace', classSession, token, { graceExpired: false });
+    updateLastStatus({ recordingState: 'grace-paused' });
+    return;
+  }
+
+  if (classSession.state === 'grace-paused') {
+    const pauseStartedAt = classSession.pauseStartedAt || Date.now();
+    if (Date.now() - pauseStartedAt <= GRACE_MS) {
+      if (heartbeat) await postEvent('class-heartbeat', classSession, token);
+      updateLastStatus({ recordingState: 'grace-paused' });
+      return;
+    }
+    classSession.state = 'paused-expired';
+    classSession.promptShown = false;
+    await postEvent('class-pause-grace', classSession, token, {
+      graceExpired: true,
+      countedUntil: pauseStartedAt + GRACE_MS
+    });
+    updateLastStatus({ recordingState: 'paused-expired' });
+    return;
+  }
+
+  if (classSession.state === 'prompting' && !classSession.sessionStarted) {
+    updateLastStatus({ recordingState: 'prompting' });
+  }
 }
 
-async function transition(next, token) {
-  if (!currentActive) return;
-  const previous = currentActive;
-  currentActive = next;
-  lastStatus = { ...lastStatus, recording: false };
-  if (token) await postEvent('class-paused', previous, token);
+async function evaluateStartedSession(token, rules, bridgeStatus, heartbeat) {
+  const trackedTab = await getTab(classSession.tabId);
+  if (!trackedTab?.url) {
+    await endClassSession();
+    return;
+  }
+
+  const matchedClassRule = getClassRule(trackedTab.url, rules.classRules, rules.patterns);
+  if (!rules.classLoggingEnabled || !matchedClassRule || trackedTab.url !== classSession.url) {
+    await endClassSession();
+    return;
+  }
+
+  classSession.title = trackedTab.title || classSession.title;
+  const trackedPlaying = trackedTab.audible === true && videoByTab.get(trackedTab.id) === true;
+
+  if (trackedPlaying) {
+    if (classSession.state === 'recording') {
+      if (heartbeat) await postEvent('class-heartbeat', classSession, token);
+      updateLastStatus({ recordingState: 'recording' });
+      return;
+    }
+
+    if (classSession.state === 'grace-paused') {
+      classSession.state = 'recording';
+      classSession.pauseStartedAt = null;
+      await postEvent('class-heartbeat', classSession, token);
+      updateLastStatus({ recordingState: 'recording' });
+      return;
+    }
+
+    if (classSession.state === 'paused-expired') {
+      if (!classSession.promptShown) {
+        classSession.promptShown = true;
+        await showClassPrompt(trackedTab, classSession, 'replay');
+      }
+      updateLastStatus({ recordingState: 'paused-expired' });
+      return;
+    }
+  }
+
+  if (classSession.state === 'recording') {
+    classSession.state = 'grace-paused';
+    classSession.pauseStartedAt = Date.now();
+    await postEvent('class-pause-grace', classSession, token, { graceExpired: false });
+    updateLastStatus({ recordingState: 'grace-paused' });
+    return;
+  }
+
+  if (classSession.state === 'grace-paused') {
+    const pauseStartedAt = classSession.pauseStartedAt || Date.now();
+    if (Date.now() - pauseStartedAt <= GRACE_MS) {
+      if (heartbeat) await postEvent('class-heartbeat', classSession, token);
+      updateLastStatus({ recordingState: 'grace-paused' });
+      return;
+    }
+    classSession.state = 'paused-expired';
+    classSession.promptShown = false;
+    await postEvent('class-pause-grace', classSession, token, {
+      graceExpired: true,
+      countedUntil: pauseStartedAt + GRACE_MS
+    });
+    updateLastStatus({ recordingState: 'paused-expired' });
+    return;
+  }
+
+  updateLastStatus({ recordingState: bridgeStatus.recordingState || classSession.state || 'idle' });
+}
+
+function handleClassConsent(message, sendResponse) {
+  return trueWithResponse(async (sendResponse) => {
+    const token = await getToken();
+    if (!token) {
+      sendResponse({ connected: false, message: 'Paste the StudyFlow pairing token first' });
+      return;
+    }
+    if (!classSession || !message.url || classSession.url !== message.url) {
+      sendResponse({ connected: false, message: 'Class prompt is no longer active.' });
+      return;
+    }
+
+    if (message.choice === 'no') {
+      declinedSiteKeys.add(siteKey(classSession.url));
+      if (classSession.sessionStarted) await postEvent('class-ended', classSession, token);
+      classSession = { ...classSession, state: 'declined', sessionStarted: false, promptShown: false };
+      updateLastStatus({ recordingState: 'declined' });
+      sendResponse({ connected: true, message: 'Class logging skipped', recordingState: 'declined' });
+      return;
+    }
+
+    const subjectId = Number(message.subjectId);
+    if (!Number.isFinite(subjectId) || subjectId <= 0) {
+      sendResponse({ connected: false, message: 'Choose a subject before starting logging.' });
+      return;
+    }
+
+    const shouldStartNew = message.choice === 'new';
+    const shouldResume = message.choice === 'resume' && classSession.sessionStarted;
+    if (shouldStartNew && classSession.sessionStarted) await postEvent('class-ended', classSession, token);
+
+    classSession.subjectId = subjectId;
+    classSession.state = 'recording';
+    classSession.sessionStarted = true;
+    classSession.promptShown = false;
+    classSession.pauseStartedAt = null;
+    await postEvent('class-start', classSession, token, { subjectId, mode: shouldResume ? 'resume' : 'new' });
+    updateLastStatus({ recordingState: 'recording', classSubjectId: subjectId });
+    sendResponse({ connected: true, message: 'Class logging started', recordingState: 'recording', classSubjectId: subjectId });
+  }, sendResponse);
+}
+
+async function endClassSession() {
+  const token = await getToken();
+  if (token && classSession?.sessionStarted) await postEvent('class-ended', classSession, token);
+  classSession = null;
+  updateLastStatus({ recordingState: 'idle' });
+}
+
+async function getTab(tabId) {
+  try {
+    return await chrome.tabs.get(tabId);
+  } catch {
+    return null;
+  }
+}
+
+async function findTabForUrl(url) {
+  const tabs = await chrome.tabs.query({});
+  return tabs.find((tab) => tab.url === url) || tabs.find((tab) => tab.url && matchesSameBrowserUrl(tab.url, url)) || null;
 }
 
 async function getRules(token) {
@@ -79,6 +331,16 @@ async function getRules(token) {
     return { connected: true, message: 'Connected to StudyFlow', classLoggingEnabled, classRules, patterns, subjects, distractions };
   } catch {
     return { connected: false, message: 'StudyFlow bridge is offline', classLoggingEnabled: false, classRules: [], patterns: [], subjects: [], distractions: null };
+  }
+}
+
+async function getBridgeStatus(token) {
+  try {
+    const response = await fetch(`${BRIDGE}/status`, { headers: { 'X-StudyFlow-Token': token } });
+    if (!response.ok) return {};
+    return await response.json();
+  } catch {
+    return {};
   }
 }
 
@@ -112,6 +374,144 @@ async function maybeShowDistractionReminder(tab, distractions, matchedRule) {
   await showInPageReminder(tab.id, rule.label ? `StudyFlow: ${rule.label}` : 'StudyFlow reminder', distractions.message || 'This looks like distraction territory. Come back to your StudyFlow plan.');
 }
 
+async function showInPageReminder(tabId, title, message) {
+  try {
+    await chrome.tabs.sendMessage(tabId, { type: 'show-studyflow-reminder', title, message });
+  } catch {
+    // Some browser pages do not allow content scripts.
+  }
+}
+
+async function showClassPrompt(tab, session, mode) {
+  try {
+    await chrome.tabs.sendMessage(tab.id, {
+      type: 'show-class-consent',
+      mode,
+      subjects: session.subjects || [],
+      selectedSubjectId: session.subjectId ?? null,
+      url: session.url,
+      title: session.title
+    });
+  } catch {
+    // Some browser pages do not allow content scripts.
+  }
+}
+
+async function hideClassPrompt(tabId) {
+  try {
+    await chrome.tabs.sendMessage(tabId, { type: 'hide-class-consent' });
+  } catch {
+    // Some browser pages do not allow content scripts.
+  }
+}
+
+
+function handlePopupStatus(sendResponse) {
+  return trueWithResponse(async (sendResponse) => {
+    const token = await getToken();
+    const [tab] = await chrome.tabs.query({ active: true, lastFocusedWindow: true });
+    if (!token) {
+      sendResponse({ token, connected: false, message: 'Paste the StudyFlow pairing token', currentUrl: tab?.url || '', classApproved: false, classLoggingEnabled: false, distractionMatch: false, recordingState: 'idle' });
+      return;
+    }
+    if (tab?.url) await evaluate();
+    sendResponse({ token, currentUrl: tab?.url || '', ...lastStatus });
+  }, sendResponse);
+}
+
+function handleSaveToken(token, sendResponse) {
+  return trueWithResponse(async (sendResponse) => {
+    const pairingToken = String(token || '').trim();
+    await chrome.storage.local.set({ pairingToken });
+    lastStatus = emptyStatus('Token saved. Checking...');
+    await evaluate();
+    sendResponse({ token: pairingToken, ...lastStatus });
+  }, sendResponse);
+}
+
+function handleTestReminder(sendResponse) {
+  return trueWithResponse(async (sendResponse) => {
+    const [tab] = await chrome.tabs.query({ active: true, lastFocusedWindow: true });
+    await chrome.notifications.create(`studyflow-test-${Date.now()}`, {
+      type: 'basic',
+      iconUrl: 'icon.png',
+      title: 'StudyFlow reminder',
+      message: 'Reminder notifications are working.'
+    });
+    if (tab?.id) await showInPageReminder(tab.id, 'StudyFlow reminder', 'Reminder banner is working on this page.');
+    sendResponse({ ok: true, connected: true, message: 'Test reminder sent' });
+  }, sendResponse);
+}
+
+function handleAddCurrentSite(ruleType, sendResponse) {
+  return trueWithResponse(async (sendResponse) => {
+    const token = await getToken();
+    const [tab] = await chrome.tabs.query({ active: true, lastFocusedWindow: true });
+    if (!token) {
+      sendResponse({ connected: false, message: 'Paste the StudyFlow pairing token first' });
+      return;
+    }
+    if (!tab?.url || !/^https?:\/\//i.test(tab.url)) {
+      sendResponse({ connected: true, message: 'Open a normal website tab first' });
+      return;
+    }
+    const response = await fetch(`${BRIDGE}/rules`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'X-StudyFlow-Token': token },
+      body: JSON.stringify({ type: ruleType === 'distraction' ? 'distraction' : 'class', url: tab.url, title: tab.title || '' })
+    });
+    const payload = await response.json().catch(() => ({}));
+    if (!response.ok) {
+      sendResponse({ connected: false, message: payload.error || 'Could not save site in StudyFlow' });
+      return;
+    }
+    await evaluate();
+    sendResponse({ token, currentUrl: tab.url, ...lastStatus, ...payload });
+  }, sendResponse);
+}
+
+async function postEvent(type, tab, token, extra = {}) {
+  try {
+    await fetch(`${BRIDGE}/events`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'X-StudyFlow-Token': token },
+      body: JSON.stringify({ type, url: tab.url, title: tab.title, ...extra })
+    });
+  } catch {
+    // StudyFlow may not be open. The next heartbeat retries quietly.
+  }
+}
+
+function updateLastStatus(patch) {
+  const recordingState = patch.recordingState || lastStatus.recordingState || 'idle';
+  lastStatus = {
+    ...lastStatus,
+    ...patch,
+    recordingState,
+    recording: recordingState === 'recording' || recordingState === 'grace-paused'
+  };
+}
+
+function localRecordingState(bridgeStatus) {
+  if (classSession?.state) return classSession.state;
+  return bridgeStatus?.recordingState || 'idle';
+}
+
+function emptyStatus(message) {
+  return {
+    connected: false,
+    message,
+    classApproved: false,
+    classLoggingEnabled: false,
+    distractionMatch: false,
+    recording: false,
+    recordingState: 'idle',
+    classSubjectId: null,
+    classSubjectName: '',
+    subjects: []
+  };
+}
+
 function matches(url, pattern) {
   const raw = String(pattern).trim();
   if (!raw) return false;
@@ -142,136 +542,28 @@ function baseDomainFor(host) {
   return parts.slice(-2).join('.');
 }
 
-function handlePopupStatus(sendResponse) {
-  return trueWithResponse(async (sendResponse) => {
-    const token = await getToken();
-    const [tab] = await chrome.tabs.query({ active: true, lastFocusedWindow: true });
-    if (!token) {
-      sendResponse({ token, connected: false, message: 'Paste the StudyFlow pairing token', currentUrl: tab?.url || '', classApproved: false, classLoggingEnabled: false, distractionMatch: false });
-      return;
-    }
-    if (tab?.url) await evaluate();
-    sendResponse({ token, currentUrl: tab?.url || '', ...lastStatus });
-  }, sendResponse);
-}
-
-function handleSaveToken(token, sendResponse) {
-  return trueWithResponse(async (sendResponse) => {
-    const pairingToken = String(token || '').trim();
-    await chrome.storage.local.set({ pairingToken });
-    lastStatus = { connected: false, message: 'Token saved. Checking...', classApproved: false, classLoggingEnabled: false, distractionMatch: false };
-    await evaluate();
-    sendResponse({ token: pairingToken, ...lastStatus });
-  }, sendResponse);
-}
-
-function handleTestReminder(sendResponse) {
-  return trueWithResponse(async (sendResponse) => {
-    const [tab] = await chrome.tabs.query({ active: true, lastFocusedWindow: true });
-    await chrome.notifications.create(`studyflow-test-${Date.now()}`, {
-      type: 'basic',
-      iconUrl: 'icon.png',
-      title: 'StudyFlow reminder',
-      message: 'Reminder notifications are working.'
-    });
-    if (tab?.id) await showInPageReminder(tab.id, 'StudyFlow reminder', 'Reminder banner is working on this page.');
-    sendResponse({ ok: true, connected: true, message: 'Test reminder sent' });
-  }, sendResponse);
-}
-
-async function showInPageReminder(tabId, title, message) {
+function siteKey(url) {
   try {
-    await chrome.tabs.sendMessage(tabId, { type: 'show-studyflow-reminder', title, message });
+    const parsed = new URL(url);
+    return parsed.hostname.replace(/^www\./, '');
   } catch {
-    // Some browser pages do not allow content scripts.
+    return String(url || '');
   }
 }
 
-async function maybeShowSubjectPicker(tab, matchedClassRule, subjects) {
-  if (!tab.id || matchedClassRule?.subjectId) return;
+function matchesSameBrowserUrl(left, right) {
   try {
-    await chrome.tabs.sendMessage(tab.id, {
-      type: 'show-subject-picker',
-      subjects,
-      selectedSubjectId: matchedClassRule?.subjectId ?? null,
-      url: tab.url,
-      title: tab.title || ''
-    });
+    const first = new URL(left);
+    const second = new URL(right);
+    return first.hostname.replace(/^www\./, '') === second.hostname.replace(/^www\./, '') && first.pathname === second.pathname;
   } catch {
-    // Some browser pages do not allow content scripts.
+    return left === right;
   }
-}
-
-function handleAddCurrentSite(ruleType, sendResponse) {
-  return trueWithResponse(async (sendResponse) => {
-    const token = await getToken();
-    const [tab] = await chrome.tabs.query({ active: true, lastFocusedWindow: true });
-    if (!token) {
-      sendResponse({ connected: false, message: 'Paste the StudyFlow pairing token first' });
-      return;
-    }
-    if (!tab?.url || !/^https?:\/\//i.test(tab.url)) {
-      sendResponse({ connected: true, message: 'Open a normal website tab first' });
-      return;
-    }
-    const response = await fetch(`${BRIDGE}/rules`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'X-StudyFlow-Token': token },
-      body: JSON.stringify({ type: ruleType === 'distraction' ? 'distraction' : 'class', url: tab.url, title: tab.title || '' })
-    });
-    const payload = await response.json().catch(() => ({}));
-    if (!response.ok) {
-      sendResponse({ connected: false, message: payload.error || 'Could not save site in StudyFlow' });
-      return;
-    }
-    await evaluate();
-    sendResponse({ token, currentUrl: tab.url, ...lastStatus, ...payload });
-  }, sendResponse);
-}
-
-function handleSetClassSubject(subjectId, url, sendResponse) {
-  return trueWithResponse(async (sendResponse) => {
-    const token = await getToken();
-    if (!token) {
-      sendResponse({ connected: false, message: 'Paste the StudyFlow pairing token first' });
-      return;
-    }
-    const [tab] = await chrome.tabs.query({ active: true, lastFocusedWindow: true });
-    const targetUrl = url || tab?.url || '';
-    if (!targetUrl) {
-      sendResponse({ connected: false, message: 'No class URL available' });
-      return;
-    }
-    const response = await fetch(`${BRIDGE}/class-subject`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'X-StudyFlow-Token': token },
-      body: JSON.stringify({ url: targetUrl, subjectId: subjectId ? Number(subjectId) : null })
-    });
-    const payload = await response.json().catch(() => ({}));
-    if (!response.ok) {
-      sendResponse({ connected: false, message: payload.error || 'Could not save subject in StudyFlow' });
-      return;
-    }
-    await evaluate();
-    sendResponse({ token, currentUrl: targetUrl, ...lastStatus, ...payload });
-  }, sendResponse);
 }
 
 function trueWithResponse(work, sendResponse) {
   work(sendResponse).catch((error) => sendResponse({ ok: false, message: String(error) }));
   return true;
-}
-
-async function postEvent(type, tab, token) {
-  try {
-    await fetch(`${BRIDGE}/events`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'X-StudyFlow-Token': token },
-      body: JSON.stringify({ type, url: tab.url, title: tab.title })
-    });
-  } catch {
-    // StudyFlow may not be open. The next heartbeat retries quietly.
-  }
 }
 
 async function getToken() {
