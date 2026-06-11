@@ -171,6 +171,8 @@ export interface Settings {
   backup_dir: string;
   autoBackupEnabled: boolean;
   lastBackupAt: string;
+  streakFreezeCredits: number;
+  streakFreezeUsedDates: string[];
   browserLoggingEnabled: boolean;
   browserPairingToken: string;
   browserClassRules: BrowserClassRule[];

@@ -187,6 +187,8 @@ export function defaultSettings() {
     backup_dir: '',
     autoBackupEnabled: true,
     lastBackupAt: '',
+    streakFreezeCredits: 2,
+    streakFreezeUsedDates: [],
     browserLoggingEnabled: false,
     browserPairingToken: randomBytes(18).toString('hex'),
     browserClassRules: [],

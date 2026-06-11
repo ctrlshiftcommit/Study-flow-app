@@ -20,6 +20,12 @@ document.querySelector('#test').addEventListener('click', async () => {
   setStatus(response);
 });
 
+document.querySelector('#record-class').addEventListener('click', async () => {
+  setStatus({ connected: true, message: 'Opening class logging prompt...' });
+  const response = await chrome.runtime.sendMessage({ type: 'show-record-prompt' });
+  render(response);
+});
+
 document.querySelector('#add-class').addEventListener('click', async () => {
   setStatus({ connected: false, message: 'Approving this whole site...' });
   const response = await chrome.runtime.sendMessage({ type: 'add-current-site', ruleType: 'class' });

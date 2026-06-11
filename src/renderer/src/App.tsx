@@ -54,7 +54,7 @@ import { Modal as SharedModal } from './components/Modal';
 import { PageHeader } from './components/PageHeader';
 import type { BrowserBridgeStatus, BrowserClassRule, BrowserConflictEvent, BrowserDistractionRule, ChecklistItem, Flashcard, FlashcardRating, Goal, Note, NoteSummary, Priority, Session, SessionType, Settings, Subject, Task, TimerCommand } from '@shared/types';
 import { calculateNextReview } from './utils/sm2';
-import { badges, calculateDailyStreak } from './utils/achievements';
+import { badges, calculateDailyStreak, evaluateAchievements } from './utils/achievements';
 import { dateKey, dayMs, endOfDay, formatDate, formatDateTime, formatDuration, formatTimer, startOfDay, startOfWeek } from './utils/time';
 import { quotes } from './utils/quotes';
 
@@ -93,6 +93,50 @@ function now() {
   return Date.now();
 }
 
+async function unlockAchievementsForAllSessions(store: Pick<ReturnType<typeof useStudyStore.getState>, 'setToast'>) {
+  const sessions = await window.studyflow.query<Session>('SELECT * FROM sessions');
+  const cards = await window.studyflow.get<{ total: number }>('SELECT SUM(review_count) as total FROM flashcards');
+  const hits = await window.studyflow.get<{ total: number }>('SELECT COUNT(*) as total FROM goal_hits');
+  const unlocked = await window.studyflow.query<{ key: string }>('SELECT key FROM achievements WHERE unlocked_at IS NOT NULL');
+  const unlockedSet = new Set(unlocked.map((item) => item.key));
+  const checks = evaluateAchievements(sessions, cards?.total || 0, hits?.total || 0);
+  for (const [key, ok] of Object.entries(checks)) {
+    if (!ok || unlockedSet.has(key)) continue;
+    await window.studyflow.run('INSERT INTO achievements(key,unlocked_at) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET unlocked_at=excluded.unlocked_at', [key, now()]);
+    const badge = badges.find((item) => item.key === key);
+    store.setToast(`Achievement unlocked: ${badge?.name || key}`);
+    await window.studyflow.notify('Achievement unlocked', badge?.name || key);
+  }
+}
+
+async function applyStreakFreezesIfNeeded(store: Pick<ReturnType<typeof useStudyStore.getState>, 'setToast'>) {
+  const settings = await window.studyflow.getSettings();
+  const credits = Math.max(0, Number(settings.streakFreezeCredits) || 0);
+  if (credits <= 0) return;
+  const sessions = await window.studyflow.query<Session>('SELECT * FROM sessions WHERE duration_seconds > 0 ORDER BY started_at ASC');
+  if (sessions.length === 0) return;
+  const activeDays = new Set(sessions.map((session) => dateKey(session.started_at)));
+  const usedDates = new Set((settings.streakFreezeUsedDates || []).filter(Boolean));
+  const today = startOfDay();
+  const yesterday = today - dayMs;
+  if (activeDays.has(dateKey(today)) || activeDays.has(dateKey(yesterday)) || usedDates.has(dateKey(yesterday))) return;
+  const latestActive = Math.max(...[...activeDays].map((day) => new Date(`${day}T00:00:00`).getTime()));
+  if (!Number.isFinite(latestActive) || latestActive >= yesterday) return;
+  const missing: string[] = [];
+  for (let cursor = latestActive + dayMs; cursor <= yesterday; cursor += dayMs) {
+    const key = dateKey(cursor);
+    if (!activeDays.has(key) && !usedDates.has(key)) missing.push(key);
+  }
+  if (missing.length === 0 || missing.length > credits) return;
+  const saved = await window.studyflow.saveSettings({
+    ...settings,
+    streakFreezeCredits: credits - missing.length,
+    streakFreezeUsedDates: [...usedDates, ...missing].sort()
+  });
+  useStudyStore.setState({ settings: saved });
+  store.setToast(`${missing.length} streak freeze${missing.length === 1 ? '' : 's'} used`);
+}
+
 const defaultAccent = '#5b6af0';
 const appLogoUrl = new URL('../../../assets/icons/tray.png', import.meta.url).href;
 const feedbackEmail = 'imakecoolappsforfun@gmail.com';
@@ -116,7 +160,7 @@ export default function App() {
   const [browserConflict, setBrowserConflict] = useState<BrowserConflictEvent | null>(null);
 
   useEffect(() => {
-    store.refresh().catch((error) => store.setToast(String(error)));
+    refreshAndUnlockAchievements().catch((error) => store.setToast(String(error)));
   }, []);
 
   useEffect(() => {
@@ -129,7 +173,7 @@ export default function App() {
 
   useEffect(() => {
     return window.studyflow.onBrowserSessionsUpdated(() => {
-      store.refresh().catch((error) => store.setToast(String(error)));
+      refreshAndUnlockAchievements().catch((error) => store.setToast(String(error)));
     });
   }, []);
 
@@ -166,6 +210,12 @@ export default function App() {
     const id = window.setTimeout(() => store.setToast(null), 3800);
     return () => window.clearTimeout(id);
   }, [store.toast]);
+
+  async function refreshAndUnlockAchievements() {
+    await applyStreakFreezesIfNeeded(store);
+    await unlockAchievementsForAllSessions(store);
+    await store.refresh();
+  }
 
   const content = (() => {
     if (store.loading || !store.settings) return <div className="panel">Loading StudyFlow...</div>;
@@ -258,8 +308,8 @@ export default function App() {
 }
 
 function Dashboard({ onStart }: { onStart: (subjectId: number) => void }) {
-  const { subjects, sessions, goals, flashcards } = useStudyStore();
-  const streak = useMemo(() => calculateDailyStreak(sessions), [sessions]);
+  const { subjects, sessions, goals, flashcards, settings } = useStudyStore();
+  const streak = useMemo(() => calculateDailyStreak(sessions, settings?.streakFreezeUsedDates || []), [sessions, settings?.streakFreezeUsedDates]);
   const quote = useMemo(() => quotes[Math.floor(Math.random() * quotes.length)], []);
   const recent = sessions.slice(0, 5);
   const dueCount = flashcards.filter((c) => !c.next_review || c.next_review <= endOfDay()).length;
@@ -286,6 +336,7 @@ function Dashboard({ onStart }: { onStart: (subjectId: number) => void }) {
         <Metric icon={Flame} label="Active streak" value={`${streak.current} days`} />
         <Metric icon={Brain} label="Due flashcards" value={String(dueCount)} />
         <Metric icon={Trophy} label="Best streak" value={`${streak.best} days`} />
+        <Metric icon={Shield} label="Streak freezes" value={String(settings?.streakFreezeCredits ?? 0)} />
       </div>
 
       <div className="grid grid-cols-1 xl:grid-cols-[1.2fr_0.8fr] gap-4">
@@ -450,43 +501,10 @@ function TimerPage({ quickStartSubjectId, onQuickStartConsumed }: { quickStartSu
 
   async function afterSessionSaved() {
     await store.refresh();
-    await unlockAchievements();
     await checkGoals(subject?.id ?? null);
+    await unlockAchievementsForAllSessions(store);
+    await store.refresh();
     await setFocusMode(false);
-  }
-
-  async function unlockAchievements() {
-    const sessions = await window.studyflow.query<Session>('SELECT * FROM sessions');
-    const cards = await window.studyflow.get<{ total: number }>('SELECT SUM(review_count) as total FROM flashcards');
-    const hits = await window.studyflow.get<{ total: number }>('SELECT COUNT(*) as total FROM goal_hits');
-    const unlocked = await window.studyflow.query<{ key: string }>('SELECT key FROM achievements WHERE unlocked_at IS NOT NULL');
-    const unlockedSet = new Set(unlocked.map((x) => x.key));
-    const totalHours = sessions.reduce((sum, s) => sum + (s.duration_seconds || 0), 0) / 3600;
-    const streak = calculateDailyStreak(sessions).current;
-    const pomodoros = sessions.filter((s) => s.session_type === 'pomodoro').length;
-    const hour = new Date().getHours();
-    const checks: Record<string, boolean> = {
-      first_session: sessions.length >= 1,
-      hours_10: totalHours >= 10,
-      hours_50: totalHours >= 50,
-      hours_100: totalHours >= 100,
-      streak_3: streak >= 3,
-      streak_7: streak >= 7,
-      streak_30: streak >= 30,
-      pomodoro_10: pomodoros >= 10,
-      cards_50: (cards?.total || 0) >= 50,
-      goal_hit_5: (hits?.total || 0) >= 5,
-      night_owl: hour < 4,
-      early_bird: hour < 7
-    };
-    for (const [key, ok] of Object.entries(checks)) {
-      if (ok && !unlockedSet.has(key)) {
-        await window.studyflow.run('INSERT INTO achievements(key,unlocked_at) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET unlocked_at=excluded.unlocked_at', [key, now()]);
-        const badge = badges.find((b) => b.key === key);
-        store.setToast(`Badge unlocked: ${badge?.name || key}`);
-        await window.studyflow.notify('Badge unlocked', badge?.name || key);
-      }
-    }
   }
 
   async function checkGoals(sid: number | null) {
@@ -910,12 +928,12 @@ function SubjectsPage() {
 }
 
 function AnalyticsPage() {
-  const { sessions, subjects, goals } = useStudyStore();
+  const { sessions, subjects, goals, settings } = useStudyStore();
   const [subjectFilter, setSubjectFilter] = useState('');
   const [period, setPeriod] = useState<StatsPeriod>('month');
   const [tab, setTab] = useState<AnalyticsTab>('overview');
   const [showReport, setShowReport] = useState(false);
-  const stats = useMemo(() => buildStudyStats(sessions, subjects, period), [sessions, subjects, period]);
+  const stats = useMemo(() => buildStudyStats(sessions, subjects, period, settings?.streakFreezeUsedDates || []), [sessions, subjects, period, settings?.streakFreezeUsedDates]);
   const filtered = stats.sessions.filter((s) => !subjectFilter || s.subject_id === Number(subjectFilter));
   const mood = stats.sessions.slice(0, 30).reverse().map((s) => ({
     day: new Date(s.started_at).toLocaleDateString(undefined, { month: 'short', day: 'numeric' }),
@@ -1208,7 +1226,7 @@ function SubjectLeaderboard({ rows }: { rows: SubjectStatsRow[] }) {
   );
 }
 
-function buildStudyStats(sessions: Session[], subjects: Subject[], period: StatsPeriod): StudyStats {
+function buildStudyStats(sessions: Session[], subjects: Subject[], period: StatsPeriod, freezeDates: string[] = []): StudyStats {
   const completed = sessions.filter(isCompletedSession);
   const scoped = filterSessionsByPeriod(completed, period);
   const totalSeconds = scoped.reduce((sum, session) => sum + sessionDuration(session), 0);
@@ -1227,7 +1245,7 @@ function buildStudyStats(sessions: Session[], subjects: Subject[], period: Stats
     longestSessionSeconds: Math.max(0, ...scoped.map(sessionDuration)),
     daysStudied: activeDays.size,
     averageActiveDaySeconds: activeDays.size ? Math.round(totalSeconds / activeDays.size) : 0,
-    streak: calculateDailyStreak(scoped),
+    streak: calculateDailyStreak(scoped, freezeDates),
     subjectRows,
     subjectChart: subjectRows.map((row) => toChartBucket(row.name, row.seconds, row.name, row.color)),
     topSubject: subjectRows[0] || null,
@@ -1666,6 +1684,7 @@ function BrowserPage() {
   const [settings, setSettings] = useState<Settings>(store.settings!);
   const [savedFields, setSavedFields] = useState<Record<string, boolean>>({});
   const [bridgeStatus, setBridgeStatus] = useState<BrowserBridgeStatus | null>(null);
+  const [browserTab, setBrowserTab] = useState<'history' | 'link'>('history');
   const debounceRef = useRef<Record<string, number>>({});
   const classRules = settings.browserClassRules || [];
   const distractionRules = settings.browserDistractionRules || [];
@@ -1747,6 +1766,17 @@ function BrowserPage() {
     void persist('browserDistractionRules', { ...settings, browserDistractionRules: distractionRules.filter((rule) => rule.id !== id) });
   }
 
+  async function deleteBrowserSession(session: Session) {
+    if (session.id === bridgeStatus?.activeSessionId) {
+      store.setToast('Stop recording before deleting the active browser session.');
+      return;
+    }
+    if (!window.confirm(`Delete this browser session (${formatDuration(session.duration_seconds || 0)})?`)) return;
+    await window.studyflow.run('DELETE FROM sessions WHERE id=?', [session.id]);
+    await store.refresh();
+    store.setToast('Browser session deleted');
+  }
+
   return (
     <section className="page browser-page space-y-5">
       <PageHeader
@@ -1759,6 +1789,55 @@ function BrowserPage() {
           </>
         )}
       />
+      <div className="browser-tab-strip">
+        <div className="segmented">
+          <button className={clsx(browserTab === 'history' && 'active')} onClick={() => setBrowserTab('history')}>History</button>
+          <button className={clsx(browserTab === 'link' && 'active')} onClick={() => setBrowserTab('link')}>Browser Link</button>
+        </div>
+      </div>
+
+      {browserTab === 'history' && (
+        <>
+          <div className="browser-status-grid">
+            <Metric icon={Clock3} label="Browser sessions" value={String(browserSessions.length)} />
+            <Metric icon={BarChart3} label="Browser study time" value={formatDuration(browserSeconds)} />
+            <Metric icon={Flame} label="Today from browser" value={formatDuration(browserTodaySeconds)} />
+          </div>
+
+          <SettingsPanel title="Browser Study History">
+            {browserSessions.length === 0 && (
+              <div className="browser-empty">No browser study sessions have been logged yet. Approved class playback will appear here after the extension records it.</div>
+            )}
+            {browserSessions.length > 0 && (
+              <div className="browser-history-list">
+                {browserSessions.map((session) => {
+                  const subject = store.subjects.find((item) => item.id === session.subject_id);
+                  const started = formatDateTime(session.started_at);
+                  const urlLabel = session.source_url ? browserHost(session.source_url) : 'No URL saved';
+                  const isActive = session.id === bridgeStatus?.activeSessionId;
+                  return (
+                    <div className="browser-history-row" key={session.id}>
+                      <div className="browser-history-main">
+                        <div className="font-bold">{session.source_title || urlLabel}</div>
+                        <div className="small">{started} · {sessionSourceLabel(session)} · {subject?.name || 'Unassigned'}</div>
+                        {session.source_url && <div className="browser-url" title={session.source_url}>{session.source_url}</div>}
+                      </div>
+                      <div className="browser-history-meta">
+                        <strong>{formatDuration(session.duration_seconds || 0)}</strong>
+                        <span>{session.ended_at ? 'Saved' : activeBrowserSessionId === session.id ? 'Recording' : 'Paused'}</span>
+                      </div>
+                      <button className="button danger icon-only browser-session-delete" title={isActive ? 'Stop recording before deleting' : 'Delete session'} disabled={isActive} onClick={() => void deleteBrowserSession(session)}><Trash2 size={15} /></button>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+          </SettingsPanel>
+        </>
+      )}
+
+      {browserTab === 'link' && (
+        <>
       <div className="browser-status-grid">
         <div className="panel browser-status-card">
           <div className="small">Bridge</div>
@@ -1777,6 +1856,8 @@ function BrowserPage() {
         </div>
       </div>
 
+      {false && (
+      <>
       <div className="browser-status-grid">
         <Metric icon={Clock3} label="Browser sessions" value={String(browserSessions.length)} />
         <Metric icon={BarChart3} label="Browser study time" value={formatDuration(browserSeconds)} />
@@ -1810,6 +1891,8 @@ function BrowserPage() {
           </div>
         )}
       </SettingsPanel>
+      </>
+      )}
 
       <div className="grid grid-cols-1 xl:grid-cols-[1fr_0.9fr] gap-4">
         <SettingsPanel title="Pair Extension">
@@ -1878,6 +1961,8 @@ function BrowserPage() {
           ))}
         </div>
       </SettingsPanel>
+        </>
+      )}
     </section>
   );
 }
@@ -1938,6 +2023,8 @@ function SettingsPage() {
           <NumberSetting label="Focus minutes" value={settings.pomodoroFocus} saved={savedFields.pomodoroFocus} onChange={(v) => persist('pomodoroFocus', { ...settings, pomodoroFocus: v })} />
           <NumberSetting label="Short break" value={settings.shortBreak} saved={savedFields.shortBreak} onChange={(v) => persist('shortBreak', { ...settings, shortBreak: v })} />
           <NumberSetting label="Long break" value={settings.longBreak} saved={savedFields.longBreak} onChange={(v) => persist('longBreak', { ...settings, longBreak: v })} />
+          <NumberSetting label="Streak freezes" value={settings.streakFreezeCredits ?? 0} saved={savedFields.streakFreezeCredits} onChange={(v) => persist('streakFreezeCredits', { ...settings, streakFreezeCredits: Math.max(0, v) })} />
+          <div className="small">Used freezes: {(settings.streakFreezeUsedDates || []).length ? settings.streakFreezeUsedDates.join(', ') : 'None'}</div>
           <Toggle label="Auto-start breaks" checked={settings.autoStartBreaks} saved={savedFields.autoStartBreaks} onChange={(v) => persist('autoStartBreaks', { ...settings, autoStartBreaks: v })} />
           <Toggle label="Auto-start focus" checked={settings.autoStartFocus} saved={savedFields.autoStartFocus} onChange={(v) => persist('autoStartFocus', { ...settings, autoStartFocus: v })} />
         </SettingsPanel>
@@ -2151,14 +2238,26 @@ function FixedDeckStats() {
 function AchievementsPanel() {
   const { achievements } = useStudyStore();
   const unlocked = new Set(achievements.filter((achievement) => achievement.unlocked_at).map((achievement) => achievement.key));
+  const unlockedCount = badges.filter((badge) => unlocked.has(badge.key)).length;
+  const percent = Math.round((unlockedCount / badges.length) * 100);
   return (
-    <div className="panel">
-      <h2 className="font-bold mb-3">Achievements</h2>
+    <div className="panel achievements-panel">
+      <div className="achievements-header">
+        <div>
+          <h2 className="font-bold">Achievements</h2>
+          <div className="small">{unlockedCount}/{badges.length} unlocked</div>
+        </div>
+        <div className="achievement-progress" style={{ '--progress': `${percent}%` } as React.CSSProperties} aria-label={`${percent}% achievements unlocked`}>
+          <span>{percent}%</span>
+        </div>
+      </div>
       <div className="achievement-grid">
         {badges.map((badge) => (
-          <div key={badge.key} className={clsx('achievement', unlocked.has(badge.key) ? 'unlocked' : 'locked')}>
-            <Trophy size={18} />
-            <div>
+          <div key={badge.key} className={clsx('achievement', unlocked.has(badge.key) ? 'unlocked' : 'locked')} style={{ '--badge-accent': badge.accent } as React.CSSProperties}>
+            <div className="achievement-medal">
+              {unlocked.has(badge.key) ? <Check size={15} /> : <Trophy size={16} />}
+            </div>
+            <div className="achievement-copy">
               <div className="font-bold">{badge.name}</div>
               <div className="small">{badge.condition}</div>
             </div>

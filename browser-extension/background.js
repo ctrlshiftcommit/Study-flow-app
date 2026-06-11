@@ -1,4 +1,5 @@
 const BRIDGE = 'http://127.0.0.1:17384';
+const RECONNECT_MS = 180_000;
 const GRACE_MS = 240_000;
 
 const videoByTab = new Map();
@@ -7,6 +8,7 @@ const declinedSiteKeys = new Set();
 
 let lastStatus = emptyStatus('Not checked yet');
 let classSession = null;
+let reconnectTimer = null;
 
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (message?.type === 'video-state' && sender.tab?.id) {
@@ -18,6 +20,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (message?.type === 'popup-status') return handlePopupStatus(sendResponse);
   if (message?.type === 'save-token') return handleSaveToken(message.token, sendResponse);
   if (message?.type === 'test-reminder') return handleTestReminder(sendResponse);
+  if (message?.type === 'show-record-prompt') return handleShowRecordPrompt(sendResponse);
   if (message?.type === 'add-current-site') return handleAddCurrentSite(message.ruleType, sendResponse);
 });
 
@@ -27,7 +30,7 @@ chrome.tabs.onUpdated.addListener((_tabId, changeInfo) => {
 });
 chrome.tabs.onRemoved.addListener((tabId) => {
   videoByTab.delete(tabId);
-  if (classSession?.tabId === tabId) void endClassSession();
+  if (classSession?.tabId === tabId) void beginReconnectBuffer();
   void evaluate();
 });
 setInterval(() => void evaluate(true), 5000);
@@ -83,6 +86,38 @@ async function evaluate(heartbeat = false) {
   });
 
   await maybeShowDistractionReminder(tab, rules.distractions, distractionRule);
+
+  if (classSession?.state === 'reconnecting') {
+    const reconnectTab = await findTabForDomain(classSession.url);
+    if (!reconnectTab?.id) {
+      updateLastStatus({ recordingState: 'paused-expired' });
+      return;
+    }
+    const reconnectRule = getClassRule(reconnectTab.url, rules.classRules, rules.patterns);
+    if (!reconnectRule) {
+      updateLastStatus({ recordingState: 'paused-expired' });
+      return;
+    }
+    cancelReconnectBuffer();
+    classSession = {
+      ...classSession,
+      tabId: reconnectTab.id,
+      url: reconnectTab.url,
+      title: reconnectTab.title || classSession.title,
+      subjectId: classSession.subjectId ?? reconnectRule.subjectId ?? null,
+      subjects: rules.subjects || [],
+      state: 'grace-paused',
+      sessionStarted: true,
+      promptShown: false
+    };
+    if (reconnectTab.audible === true && videoByTab.get(reconnectTab.id) === true && classSession.subjectId) {
+      classSession.state = 'recording';
+      classSession.pauseStartedAt = null;
+      await postEvent('class-start', classSession, token, { subjectId: classSession.subjectId, mode: 'resume' });
+      updateLastStatus({ recordingState: 'recording' });
+      return;
+    }
+  }
 
   if (classSession?.sessionStarted) {
     await evaluateStartedSession(token, rules, bridgeStatus, heartbeat);
@@ -195,20 +230,39 @@ async function evaluate(heartbeat = false) {
 async function evaluateStartedSession(token, rules, bridgeStatus, heartbeat) {
   const trackedTab = await getTab(classSession.tabId);
   if (!trackedTab?.url) {
-    await endClassSession();
+    await beginReconnectBuffer();
     return;
   }
 
   const matchedClassRule = getClassRule(trackedTab.url, rules.classRules, rules.patterns);
-  if (!rules.classLoggingEnabled || !matchedClassRule || trackedTab.url !== classSession.url) {
+  if (!rules.classLoggingEnabled || !matchedClassRule) {
     await endClassSession();
     return;
+  }
+
+  let sameDomainUrlChanged = false;
+  if (trackedTab.url !== classSession.url) {
+    if (!sameDomain(trackedTab.url, classSession.url)) {
+      await beginReconnectBuffer();
+      return;
+    }
+    classSession.url = trackedTab.url;
+    sameDomainUrlChanged = true;
   }
 
   classSession.title = trackedTab.title || classSession.title;
   const trackedPlaying = trackedTab.audible === true && videoByTab.get(trackedTab.id) === true;
 
   if (trackedPlaying) {
+    if (sameDomainUrlChanged && classSession.subjectId) {
+      classSession.state = 'recording';
+      classSession.pauseStartedAt = null;
+      classSession.promptShown = false;
+      await postEvent('class-start', classSession, token, { subjectId: classSession.subjectId, mode: 'resume' });
+      updateLastStatus({ recordingState: 'recording' });
+      return;
+    }
+
     if (classSession.state === 'recording') {
       if (heartbeat) await postEvent('class-heartbeat', classSession, token);
       updateLastStatus({ recordingState: 'recording' });
@@ -304,10 +358,39 @@ function handleClassConsent(message, sendResponse) {
 }
 
 async function endClassSession() {
+  cancelReconnectBuffer();
   const token = await getToken();
   if (token && classSession?.sessionStarted) await postEvent('class-ended', classSession, token);
   classSession = null;
   updateLastStatus({ recordingState: 'idle' });
+}
+
+async function beginReconnectBuffer() {
+  if (!classSession?.sessionStarted) {
+    if (classSession?.tabId) await hideClassPrompt(classSession.tabId);
+    classSession = null;
+    return;
+  }
+  if (classSession.state !== 'reconnecting') {
+    const token = await getToken();
+    if (token) {
+      await postEvent('class-pause-grace', classSession, token, {
+        graceExpired: true,
+        countedUntil: Date.now()
+      });
+    }
+  }
+  classSession = { ...classSession, state: 'reconnecting', tabId: null, promptShown: false };
+  updateLastStatus({ recordingState: 'paused-expired' });
+  clearTimeout(reconnectTimer);
+  reconnectTimer = setTimeout(() => {
+    void endClassSession();
+  }, RECONNECT_MS);
+}
+
+function cancelReconnectBuffer() {
+  if (reconnectTimer) clearTimeout(reconnectTimer);
+  reconnectTimer = null;
 }
 
 async function getTab(tabId) {
@@ -321,6 +404,21 @@ async function getTab(tabId) {
 async function findTabForUrl(url) {
   const tabs = await chrome.tabs.query({});
   return tabs.find((tab) => tab.url === url) || tabs.find((tab) => tab.url && matchesSameBrowserUrl(tab.url, url)) || null;
+}
+
+async function findTabForDomain(url) {
+  const tabs = await chrome.tabs.query({});
+  return tabs.find((tab) => tab.url && sameDomain(tab.url, url) && tab.audible === true && videoByTab.get(tab.id) === true)
+    || tabs.find((tab) => tab.url && sameDomain(tab.url, url))
+    || null;
+}
+
+async function findBestRecordPromptTab(activeTab, rules) {
+  if (activeTab?.url && (getClassRule(activeTab.url, rules.classRules, rules.patterns) || videoByTab.get(activeTab.id) === true || activeTab.audible === true)) return activeTab;
+  const tabs = await chrome.tabs.query({});
+  return tabs.find((tab) => tab.url && getClassRule(tab.url, rules.classRules, rules.patterns) && tab.audible === true && videoByTab.get(tab.id) === true)
+    || tabs.find((tab) => tab.url && getClassRule(tab.url, rules.classRules, rules.patterns))
+    || null;
 }
 
 async function getRules(token) {
@@ -392,8 +490,10 @@ async function showClassPrompt(tab, session, mode) {
       url: session.url,
       title: session.title
     });
+    return true;
   } catch {
     // Some browser pages do not allow content scripts.
+    return false;
   }
 }
 
@@ -440,6 +540,70 @@ function handleTestReminder(sendResponse) {
     });
     if (tab?.id) await showInPageReminder(tab.id, 'StudyFlow reminder', 'Reminder banner is working on this page.');
     sendResponse({ ok: true, connected: true, message: 'Test reminder sent' });
+  }, sendResponse);
+}
+
+function handleShowRecordPrompt(sendResponse) {
+  return trueWithResponse(async (sendResponse) => {
+    const token = await getToken();
+    const [tab] = await chrome.tabs.query({ active: true, lastFocusedWindow: true });
+    if (!token) {
+      sendResponse({ connected: false, message: 'Paste the StudyFlow pairing token first' });
+      return;
+    }
+    if (!tab?.id || !tab.url || !/^https?:\/\//i.test(tab.url)) {
+      sendResponse({ connected: true, message: 'Open the class tab first' });
+      return;
+    }
+
+    const rules = await getRules(token);
+    if (!rules.connected) {
+      sendResponse({ token, connected: false, message: rules.message || 'StudyFlow bridge is offline', currentUrl: tab.url });
+      return;
+    }
+    const bridgeStatus = await getBridgeStatus(token);
+    const targetTab = await findBestRecordPromptTab(tab, rules) || tab;
+    if (!targetTab?.id || !targetTab.url || !/^https?:\/\//i.test(targetTab.url)) {
+      sendResponse({ token, connected: true, message: 'Open the class tab first', currentUrl: tab.url });
+      return;
+    }
+    if (targetTab.id !== tab.id) await chrome.tabs.update(targetTab.id, { active: true }).catch(() => undefined);
+    const matchedClassRule = getClassRule(targetTab.url, rules.classRules, rules.patterns);
+    const existingSession =
+      classSession?.sessionStarted && classSession.url && sameDomain(classSession.url, targetTab.url)
+        ? classSession
+        : null;
+    const bridgeSessionMatches = bridgeStatus.activeSessionId && bridgeStatus.activeUrl && sameDomain(bridgeStatus.activeUrl, targetTab.url);
+    const subjectId = existingSession?.subjectId ?? bridgeStatus.activeSubjectId ?? matchedClassRule?.subjectId ?? null;
+    const mode = existingSession || bridgeSessionMatches ? 'replay' : 'initial';
+
+    if (classSession?.tabId && classSession.tabId !== targetTab.id) await hideClassPrompt(classSession.tabId);
+    declinedSiteKeys.delete(siteKey(targetTab.url));
+    classSession = {
+      tabId: targetTab.id,
+      url: targetTab.url,
+      title: targetTab.title || existingSession?.title || '',
+      subjectId,
+      subjects: rules.subjects || [],
+      state: mode === 'replay' ? 'paused-expired' : 'prompting',
+      sessionStarted: Boolean(existingSession || bridgeSessionMatches),
+      promptShown: true,
+      pauseStartedAt: null
+    };
+
+    const shown = await showClassPrompt(targetTab, classSession, mode);
+    updateLastStatus({
+      connected: true,
+      message: shown ? 'Class logging prompt opened' : 'Could not open prompt on this page',
+      currentUrl: targetTab.url,
+      classApproved: Boolean(matchedClassRule),
+      classLoggingEnabled: Boolean(rules.classLoggingEnabled),
+      recordingState: classSession.state,
+      classSubjectId: subjectId ?? null,
+      classSubjectName: (rules.subjects || []).find((subject) => subject.id === subjectId)?.name || '',
+      subjects: rules.subjects || []
+    });
+    sendResponse({ token, currentUrl: targetTab.url, ...lastStatus });
   }, sendResponse);
 }
 
@@ -556,6 +720,16 @@ function matchesSameBrowserUrl(left, right) {
     const first = new URL(left);
     const second = new URL(right);
     return first.hostname.replace(/^www\./, '') === second.hostname.replace(/^www\./, '') && first.pathname === second.pathname;
+  } catch {
+    return left === right;
+  }
+}
+
+function sameDomain(left, right) {
+  try {
+    const first = new URL(left);
+    const second = new URL(right);
+    return first.hostname.replace(/^www\./, '') === second.hostname.replace(/^www\./, '');
   } catch {
     return left === right;
   }

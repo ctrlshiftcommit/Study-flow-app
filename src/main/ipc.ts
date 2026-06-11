@@ -150,6 +150,8 @@ function normalizeSettings(settings: Settings, defaults: Settings): Settings {
     ...settings,
     browserClassRules: normalizeClassRules(settings.browserClassRules || []),
     browserDistractionRules,
+    streakFreezeCredits: Math.max(0, Number(settings.streakFreezeCredits ?? defaults.streakFreezeCredits) || 0),
+    streakFreezeUsedDates: Array.isArray(settings.streakFreezeUsedDates) ? settings.streakFreezeUsedDates.filter((item) => typeof item === 'string') : defaults.streakFreezeUsedDates,
     browserDistractionRemindersEnabled: settings.browserDistractionRemindersEnabled ?? defaults.browserDistractionRemindersEnabled,
     browserDistractionCooldownMinutes: settings.browserDistractionCooldownMinutes || defaults.browserDistractionCooldownMinutes,
     browserDistractionMessage: settings.browserDistractionMessage || defaults.browserDistractionMessage

@@ -320,7 +320,8 @@ function handleBrowserEvent(payload: BrowserEventPayload, matchedSubjectId: numb
 
 function startBrowserSession(event: BrowserConflictEvent, subjectId: number, mode: 'new' | 'resume'): void {
   const time = Date.now();
-  if (browserSession && (browserSession.url !== event.url || mode === 'new')) finalizeBrowserSession();
+  if (browserSession && browserSession.url !== event.url && !(mode === 'resume' && matchesSameBrowserDomain(browserSession.url, event.url))) finalizeBrowserSession();
+  if (browserSession && mode === 'new') finalizeBrowserSession();
   if (!browserSession && mode === 'resume' && restoreLatestBrowserSession(event, subjectId, time)) return;
   if (!browserSession || mode === 'new') {
     const info = getDb().prepare(
@@ -341,6 +342,7 @@ function startBrowserSession(event: BrowserConflictEvent, subjectId: number, mod
     return;
   }
   browserSession.subjectId = subjectId;
+  browserSession.url = event.url;
   browserSession.title = event.title;
   browserSession.lastHeartbeatAt = time;
   if (!browserSession.resumedAt) browserSession.resumedAt = time;
@@ -349,19 +351,20 @@ function startBrowserSession(event: BrowserConflictEvent, subjectId: number, mod
 }
 
 function restoreLatestBrowserSession(event: BrowserConflictEvent, subjectId: number, time: number): boolean {
-  const row = getDb().prepare(
+  const rows = getDb().prepare(
     `SELECT id,duration_seconds,source_url,source_title
      FROM sessions
-     WHERE source='browser' AND source_url=?
+     WHERE source='browser'
      ORDER BY started_at DESC, id DESC
-     LIMIT 1`
-  ).get(event.url) as { id: number; duration_seconds?: number | null; source_url: string; source_title?: string | null } | undefined;
+     LIMIT 20`
+  ).all() as { id: number; duration_seconds?: number | null; source_url: string; source_title?: string | null }[];
+  const row = rows.find((item) => item.source_url && matchesSameBrowserDomain(item.source_url, event.url));
   if (!row) return false;
   browserSession = {
     id: row.id,
     accumulatedMs: Math.max(0, Number(row.duration_seconds) || 0) * 1000,
     resumedAt: time,
-    url: row.source_url,
+    url: event.url,
     title: event.title || row.source_title || '',
     subjectId,
     lastHeartbeatAt: time,
@@ -372,13 +375,17 @@ function restoreLatestBrowserSession(event: BrowserConflictEvent, subjectId: num
 }
 
 function heartbeatBrowserSession(event: BrowserConflictEvent): void {
-  if (!browserSession || !matchesSameBrowserUrl(browserSession.url, event.url)) return;
+  if (!browserSession || !matchesSameBrowserDomain(browserSession.url, event.url)) return;
+  browserSession.url = event.url;
+  browserSession.title = event.title;
   browserSession.lastHeartbeatAt = Date.now();
   if (browserSession.recordingState !== 'paused-expired') persistBrowserSession(false);
 }
 
 function markBrowserGrace(event: BrowserConflictEvent): void {
-  if (!browserSession || !matchesSameBrowserUrl(browserSession.url, event.url)) return;
+  if (!browserSession || !matchesSameBrowserDomain(browserSession.url, event.url)) return;
+  browserSession.url = event.url;
+  browserSession.title = event.title;
   browserSession.lastHeartbeatAt = Date.now();
   browserSession.recordingState = 'grace-paused';
   persistBrowserSession(false);
@@ -415,8 +422,8 @@ function persistBrowserSession(ended: boolean): void {
   if (!browserSession) return;
   const activeMs = browserSession.resumedAt ? Date.now() - browserSession.resumedAt : 0;
   const seconds = Math.max(0, Math.round((browserSession.accumulatedMs + activeMs) / 1000));
-  getDb().prepare('UPDATE sessions SET subject_id=?, ended_at=?, duration_seconds=? WHERE id=?')
-    .run(browserSession.subjectId, ended ? Date.now() : null, seconds, browserSession.id);
+  getDb().prepare('UPDATE sessions SET subject_id=?, ended_at=?, duration_seconds=?, source_url=?, source_title=? WHERE id=?')
+    .run(browserSession.subjectId, ended ? Date.now() : null, seconds, browserSession.url, browserSession.title, browserSession.id);
   mainWindow?.webContents.send('browser:sessions-updated');
 }
 
@@ -452,6 +459,16 @@ function matchesSameBrowserUrl(left: string, right: string): boolean {
     const first = new URL(left);
     const second = new URL(right);
     return first.hostname.replace(/^www\./, '') === second.hostname.replace(/^www\./, '') && first.pathname === second.pathname;
+  } catch {
+    return left === right;
+  }
+}
+
+function matchesSameBrowserDomain(left: string, right: string): boolean {
+  try {
+    const first = new URL(left);
+    const second = new URL(right);
+    return first.hostname.replace(/^www\./, '') === second.hostname.replace(/^www\./, '');
   } catch {
     return left === right;
   }

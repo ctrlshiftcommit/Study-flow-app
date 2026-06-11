@@ -80,6 +80,7 @@ textarea {
 }
 .site-actions {
   margin-top: 12px;
+  grid-template-columns: 1fr;
 }
 button {
   min-height: 34px;
@@ -91,6 +92,14 @@ button {
   cursor: pointer;
 }
 button:hover { background: rgba(255, 255, 255, 0.16); }
+.record-button {
+  border-color: rgba(255, 140, 60, 0.48);
+  background: linear-gradient(135deg, rgba(255, 140, 60, 0.3), rgba(255, 179, 115, 0.2));
+  font-weight: 800;
+}
+.record-button:hover {
+  background: linear-gradient(135deg, rgba(255, 140, 60, 0.42), rgba(255, 179, 115, 0.28));
+}
 .checks {
   display: grid;
   gap: 8px;
